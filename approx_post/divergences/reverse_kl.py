@@ -4,32 +4,38 @@ from math import inf
 # Internal imports:
 from ..optimisation.loop import optimisation_loop
 
-def minimise_reversekl(approxfun_dict, jointfun_dict, x_obs, phi_shape, phi_0=None, phi_lb=None, 
-                       phi_ub=None, use_reparameterisation=True, verbose=False, num_samples=1000):
+def minimise_reversekl(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num_samples=1000):
 
     # Create wrapper around forward kl loss function:
     def loss_and_grad(phi):
         if use_reparameterisation:
-            loss, grad = reversekl_reparameterisation(phi, approxfun_dict, jointfun_dict, x_obs)
+            loss, grad = reversekl_reparameterisation(phi, approx_dist, joint_dist, num_samples)
         else:
-            loss, grad = reversekl_controlvariates(phi, approxfun_dict, jointfun_dict, x_obs)
+            loss, grad = reversekl_controlvariates(phi, approx_dist, joint_dist, num_samples)
         return (loss, grad)
 
     # Minimise reverse KL divergence:
     loss_name = "reverse KL divergence"
-    best_phi, best_loss = minimise_loss(loss_and_grad, phi_shape, phi_0, phi_lb, 
-                                        phi_ub, loss_name, verbose)
-    return (loss, grad)
+    best_phi, best_loss = minimise_loss(loss_and_grad, approx_dist, loss_name, verbose)
 
-def reversekl_controlvariates(phi, approxfun_dict, jointfun_dict, x_obs):
+    # Update parameters of approximate dist:
+    approx_dist.phi = best_phi
+
+    # Place results in dict:
+    results_dict = {'Fitted Distribution': approx_dist,
+                    'Loss': best_loss}
+
+    return results_dict
+
+def reversekl_controlvariates(phi, approx, joint, num_samples):
 
     # Draw samples:
-    theta_samples = approxfun_dict["sample"](num_samples, phi)
+    theta_samples = approx._func_dict["sample"](num_samples, phi)
 
-    # Compute log probabilities and gradient wrt phi:
+    # Compute log approx._func_dict and gradient wrt phi:
     approx_lp = approxfun_dict["lp"](theta_samples, phi) 
-    joint_lp = jointfun_dict["lp"](theta_samples, x_obs)
-    approx_del_phi = approxfun_dict["lp_del_phi"](theta_samples, phi)
+    joint_lp = joint._func_dict["lp"](theta_samples, x_obs)
+    approx_del_phi = approx._func_dict["lp_del_phi"](theta_samples, phi)
 
     # Compute loss and gradient of loss values:
     loss_samples = -1*np.mean(joint_lp - approx_lp, axis=0)
@@ -42,18 +48,18 @@ def reversekl_controlvariates(phi, approxfun_dict, jointfun_dict, x_obs):
 
     return (loss, grad)
 
-def reversekl_reparameterisation(phi, approxfun_dict, jointfun_dict, x_obs):
+def reversekl_reparameterisation(phi, approx, joint, num_samples):
 
     # Sample from base distribution then transform samples:
-    epsilon_samples = approxfun_dict["sample"](num_samples)
-    theta_samples = approxfun_dict["transform"](epsilon_samples, phi)
+    epsilon_samples = approx._func_dict["sample_base"](num_samples)
+    theta_samples = approx._func_dict["transform"](epsilon_samples, phi)
 
     # Compute log probabilities and gradient wrt phi:
-    approx_lp = approxfun_dict["lp"](theta_samples, phi) 
-    approx_del_1 = approxfun_dict["approx_del_theta"](theta_samples, phi)
-    transform_del_phi = approxfun_dict["transform_del_phi"](theta_samples, phi)
-    joint_lp = jointfun_dict["lp"](theta_samples, x_obs)
-    joint_del_theta = jointfun_dict["lp_del_phi"](theta_samples, x_obs)
+    approx_lp = approx._func_dict["lp"](theta_samples, phi) 
+    approx_del_1 = approx._func_dict["approx_del_theta"](theta_samples, phi)
+    transform_del_phi = approx._func_dict["transform_del_phi"](theta_samples, phi)
+    joint_lp = joint._func_dict["lp"](theta_samples, x_obs)
+    joint_del_theta = joint._func_dict["lp_del_phi"](theta_samples, x_obs)
 
     # Compute loss and grad:
     loss = -1*np.mean(joint_lp - approx_lp, axis=0)

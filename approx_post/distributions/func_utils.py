@@ -18,9 +18,9 @@ def create_grads(lp, transform=None):
 
     # Using reparameterisation:
     else:
-        lp_del_phi = jax.jacfwd(lp, argnums=0)
-        lp_del_phi = vectorise_functions(lp_del_phi)
-        return lp_del_phi
+        lp_del_1 = jax.jacfwd(lp, argnums=0)
+        lp_del_1 = vectorise_functions(lp_del_1)
+        return lp_del_1
 
 def vectorise_functions(*func_list):
     vmap_list = []

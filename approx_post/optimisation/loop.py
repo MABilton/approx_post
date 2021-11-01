@@ -4,18 +4,21 @@ import numpy as np
 # Internal imports:
 from .utilities import initialise_from_bounds
 
-def optimisation_loop(loss_and_grad, phi_shape, phi_0, phi_lb, phi_ub, loss_name, verbose):
+def optimisation_loop(loss_and_grad, approx_dist, loss_name, verbose):
     
     # Initialise optimisation parameters:
     optim_params = initialise_optim_params()
 
     # Create bounds containers:
-    phi_bounds = create_phi_bounds(phi_shape, phi_lb, phi_ub)
+    phi_bounds = create_phi_bounds(approx_dist.phi_shape, 
+                                   approx_dist.phi_lb, 
+                                   approx_dist.phi_ub)
 
     # Initialise phi if not specified:
-    if phi_0 is None:
-        phi_0 = random_container_from_bounds(lb, ub)
-   
+    if approx_dist.phi is None:
+        phi_0 = random_container_from_bounds(phi_bounds)
+    else:
+        phi_0 = approx_dist.phi
     # Place the initial parameter guess in a JaxContainer:
     phi_0 = JaxContainer(phi_0)
         

@@ -4,8 +4,6 @@ import numpy as np
 PHI_MAX = 1e2
 PHI_MIN = -1*PHI_MAX
 
-
-
 def create_bound_containers(phi_shape, phi_lb, phi_ub):
 
     phi_lb = preprocess_bounds(phi_lb, phi_shape, default_val=MIN_PHI)

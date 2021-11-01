@@ -1,4 +1,55 @@
-import jax.numpy as jnp
+
+# External imports:
+from numpy.random import multivariate_normal as mvn
+import jax.scipy.stats as jstats
+
+# Local imports:
+from .approx import ApproximateDistribution
+from .jax_utils import create_grads, vectorise_functions
+
+def create(ndim, mean_lb=None, mean_ub=None, var_ub=None, cov_lb=None, cov_ub=None):
+
+    def sample(num_samples, phi):
+        samples = mvn(loc=phi["mean"], scale=phi["cov"], size=num_samples)
+        return samples.reshape(num_samples, ndim)
+    
+    def sample_base(num_samples):
+        mean = jnp.zeros(ndim)
+        cov = jnp.identity(ndim)
+        samples = mvn(loc=mean, scale=cov, size=num_samples)
+        return samples.reshape(num_samples, ndim)
+
+    def transform(epsilon, phi):
+        L = assemble_cholesky(phi['chol_diag'], phi['chol_lowerdiag'])
+        theta = phi["mean"] + L @ epsilon
+        return theta.reshape(ndim,)
+
+    def lp(theta, phi):
+        return jstats.norm.logpdf(theta, loc=phi[0], scale=phi[1])
+
+    func_dict = {'lp': ,
+                 'sample': ,
+                 'sample_base': ,
+                 'lp_del_1': ,
+                 'lp_del_2': ,
+                 'lp_del_phi': }
+
+    func_to_save =  {'lp': ,
+                     'sample': ,
+                     'sample_base': ,
+                     'lp_del_1': ,
+                     'lp_del_2': ,
+                     'lp_del_phi': }
+
+    # Add phi parameter shapes:
+    phi_shape = {"mean": tuple(ndim), 
+                 "chol_diag": tuple(ndim),
+                 "chol_lowerdiag": tuple((ndim**2-ndim)//2)}
+
+    # Create parameter bounds:
+    attr_dict = 
+
+    return ApproximateDistribution(func_dict, attr_dict, func_to_save)
 
 def assemble_cholesky(chol_diag, chol_lowerdiag):
     
