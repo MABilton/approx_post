@@ -1,11 +1,11 @@
 import numpy as np
 from math import inf
 
-# Internal imports:
-from ..optimisation.loop import optimisation_loop
+from ..optimisation.loop import minimise_loss
+from ..optimisation.utilities import apply_cv
 
-def minimise_forwardkl(approx_dist, joint_dist=None, initial_samples=None, posterior_samples=None,
-                       use_reparameterisation=False, num_samples=1000):
+def fit(approx_dist, joint_dist=None, initial_samples=None, posterior_samples=None,
+        use_reparameterisation=False, verbose=False, num_samples=100):
 
     # If we've been given samples to fit 'initial guess' of posterior:
     if initial_samples is not None:
@@ -15,7 +15,7 @@ def minimise_forwardkl(approx_dist, joint_dist=None, initial_samples=None, poste
 
     # Minimise forward KL divergence:
     best_phi, best_loss = forwardkl_optimloop(approx_dist, joint_dist, posterior_samples, 
-                                              use_reparameterisation, num_samples)
+                                              use_reparameterisation, verbose, num_samples)
 
     # Update parameters of approximate dist:
     approx_dist.phi = best_phi
@@ -26,14 +26,14 @@ def minimise_forwardkl(approx_dist, joint_dist=None, initial_samples=None, poste
 
     return results_dict
 
-def forwardkl_optimloop(approx_dist, joint_dist, initial_samples, use_reparameterisation, num_samples):
+def forwardkl_optimloop(approx_dist, joint_dist, provided_samples, use_reparameterisation, verbose, num_samples):
     
     # Create wrapper around forward kl loss function:
     def loss_and_grad(phi):
         
         # If we're given posterior samples, compute forward KL divergence directly:
-        if posterior_samples is not None:
-            loss, grad = forwardkl_sampleposterior(phi, approx_dist, posterior_samples)
+        if provided_samples is not None:
+            loss, grad = forwardkl_sampleposterior(phi, approx_dist, provided_samples)
 
         # If we're not given posterior samples, we need to use importance sampling:
         else:
@@ -46,7 +46,8 @@ def forwardkl_optimloop(approx_dist, joint_dist, initial_samples, use_reparamete
 
         return (loss, grad)
 
-    best_phi, best_loss = optimisation_loop(loss_and_grad, approx_dist, loss_name, verbose)
+    loss_name = 'forward KL divergence'
+    best_phi, best_loss = minimise_loss(loss_and_grad, approx_dist, loss_name, verbose)
 
     return (best_phi, best_loss)
 
@@ -65,7 +66,7 @@ def forwardkl_reparameterisation(phi, approx, joint, num_samples):
     
     # Evaluate approx lp and likelihood lp at samples:
     approx_lp = approx._func_dict["lp"](theta_samples, phi)
-    joint_lp = joint._func_dict["lp"](theta_samples, x_obs)
+    joint_lp = joint._func_dict["lp"](theta_samples, joint.x)
     
     # Compute importance weights:
     is_wts = compute_importance_weights(approx_lp, joint_lp, num_samples)
@@ -76,7 +77,7 @@ def forwardkl_reparameterisation(phi, approx, joint, num_samples):
     # Call gradient functions:
     approx_del_1 = approx._func_dict["lp_del_1"](theta_samples, phi)
     approx_del_2 = approx._func_dict["lp_del_2"](theta_samples, phi)
-    joint_del_1 = joint._func_dict["lp_del_1"](theta_samples, x_obs)
+    joint_del_1 = joint._func_dict["lp_del_1"](theta_samples, joint.x)
     transform_del_phi = approx._func_dict["transform_del_2"](epsilon_samples, phi)
     
     # Use chain rule to compute derivative wrt phi:
@@ -89,7 +90,7 @@ def forwardkl_reparameterisation(phi, approx, joint, num_samples):
 
     # Apply control variates:
     control_variate = approx_del_2
-    loss = -1*apply_cv(loss_samples, control_variate)
+    loss = -1*apply_cv(loss_samples.reshape(-1,1), control_variate)
     grad = -1*apply_cv(grad_samples, control_variate)
 
     return (loss, grad)
@@ -101,7 +102,7 @@ def forwardkl_controlvariates(phi, approx, joint, num_samples):
 
     # Evaluate approx lp and likelihood lp at samples:
     approx_lp = approx._func_dict["lp"](theta_samples, phi)
-    joint_lp = joint._func_dict["lp"](theta_samples, x_obs)
+    joint_lp = joint._func_dict["lp"](theta_samples, joint.x)
 
     # Compute importance weights:
     is_wts = compute_importance_weights(approx_lp, joint_lp, num_samples)
@@ -110,14 +111,14 @@ def forwardkl_controlvariates(phi, approx, joint, num_samples):
     loss_samples = is_wts*approx_lp
 
     # Compute gradients:
-    approx_del_phi = approx._func_dict["lp_del_phi"](theta_samples, phi)
+    approx_del_phi = approx._func_dict["lp_del_2"](theta_samples, phi)
     grad_samples = np.einsum("a,ai->ai", is_wts, approx_del_phi)
 
     # Define the control variate we'll use:
     cv = approx_del_phi
 
     # Apply control variates:
-    loss = -1*apply_cv(loss_vals, cv)
+    loss = -1*apply_cv(loss_samples.reshape(-1,1), cv)
     grad = -1*apply_cv(grad_samples, cv)
 
     return (loss, grad)

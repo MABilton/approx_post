@@ -1,51 +1,40 @@
 import numpy as np
 import jax
-import jax.scipy.stats as jstats
-from forward_kl import fit_forward
-from reverse_kl import fit_reverse
-from approx import create_normal_approx
+from numpy.random import multivariate_normal as mvn
 
-def create_joint(prior_mean, prior_var, noise_std, use_reparameterisation, forward_mapping):
+from approx_post import ApproximateDistribution, JointDistribution, reverse_kl, forward_kl
 
-    # Log probability function for a Gaussian posterior:
-    def lp(theta, x):
-        prior_lp = jstats.norm.logpdf(theta, loc=prior_mu, scale=prior_var**(1/2))
-        like_lp = jstats.norm.logpdf(x, loc=forward_mapping(theta), scale=noise_std)
-        like_lp = np.sum(like_lp, axis=0)
-        return prior_lp + like_lp
-
-    lp_vmap = jax.vmap(joint_lp, in_axes=(0,None))
-
-    if use_reparameterisation:
-        joint_del_theta = jax.jacfwd(joint_lp, argnums=0)
-        joint_del_theta = jax.vmap(joint_del_theta, in_axes=(0,None))
-        output_dict = {"lp": lp_vmap, "lp_del_theta": joint_del_theta}
-    else:
-        output_dict = {"lp": lp_vmap}
-
-    return output_dict
-
-def create_data(epsilon, forward_mapping, noise_std, num_samples):
-    theta = forward_mapping(epsilon)
-    samples = np.random.normal(loc=theta, scale=noise_std, size=num_samples)
-    return samples
+def create_data(model, true_theta, noise_cov, num_samples):
+    mean = model(true_theta)
+    samples = mvn(mean, noise_cov, num_samples)
+    return samples.reshape(num_samples, -1)
 
 def main():
 
-    # Define forward mapping, which maps epsilon -> theta:
-    forward_mapping = lambda epsilon: epsilon
+    # First, let's define a model:
+    ndim = 3
+    model = lambda theta: theta**2
+    model_grad = jax.vmap(jax.jacfwd(model), in_axes=0)
 
     # Create artificial data:
-    epsilon = 2
-    noise_std = 0.2
-    num_samples = 1
-    data = create_data(epsilon, forward_mapping, noise_std, num_samples)
+    true_theta = np.random.rand(ndim)
+    noise_cov = np.identity(ndim)
+    num_samples = 3
+    data = create_data(model, true_theta, noise_cov, num_samples)
 
-    # Define initial guess for phi and limits on values:
-    mean_lim = np.array([1e3, 1e3])
-    phi_bounds = {"mean": np.array(-1*mean_lim, mean_lim),
-                  "cov": np.array([ , ])}
+    print(f'True theta: \n {true_theta}')
+    print(f'Observations: \n {data}')
 
+    # Create Gaussian approximate distribution:
+    approx = ApproximateDistribution.gaussian(ndim)
+
+    # Create Joint distribution from forward model:
+    prior_mean = np.zeros(ndim)
+    prior_cov = np.identity(ndim)
+    joint = JointDistribution.from_model(data, model, noise_cov, prior_mean, prior_cov, model_grad)
+
+    # Fit distribution to reverse KL divergence:
+    results_dict = reverse_kl.fit(approx, joint, use_reparameterisation=True, verbose=True)
 
 if __name__ == "__main__":
     main()
