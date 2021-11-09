@@ -1,5 +1,5 @@
 import numpy as np
-from .base import ArrayContainer
+from .array import ArrayContainer
 
 class NumpyContainer(ArrayContainer):
 

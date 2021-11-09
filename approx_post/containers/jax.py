@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class, tree_flatten, tree_unflatten
-from .base import ArrayContainer
+from .array import ArrayContainer
 
 @register_pytree_node_class
 class JaxContainer(ArrayContainer):

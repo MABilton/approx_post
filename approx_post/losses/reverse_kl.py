@@ -3,9 +3,8 @@ from math import inf
 
 # Internal imports:
 from .cv import apply_cv
-from ..optimisation.loop import minimise_loss
 
-def fit(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num_samples=100):
+def reverse_kl(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num_samples=100):
 
     # Create wrapper around forward kl loss function:
     def loss_and_grad(phi):
@@ -15,14 +14,7 @@ def fit(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num
             loss, grad = reversekl_controlvariates(phi, approx_dist, joint_dist, num_samples)
         return (loss, grad)
 
-    # Minimise reverse KL divergence:
-    loss_name = "reverse KL divergence"
-    best_phi, best_loss = minimise_loss(loss_and_grad, approx_dist, loss_name, verbose)
-
-    # Update parameters of approximate dist:
-    approx_dist.phi = best_phi
-
-    return approx_dist
+    return loss_and_grad
 
 def reversekl_controlvariates(phi, approx, joint, num_samples):
 

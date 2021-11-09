@@ -2,27 +2,8 @@ import numpy as np
 from math import inf
 
 from .cv import apply_cv
-from ..optimisation.loop import minimise_loss
 
-def fit(approx_dist, joint_dist=None, initial_samples=None, posterior_samples=None,
-        use_reparameterisation=False, verbose=False, num_samples=1000):
-
-    # If we've been given samples to fit 'initial guess' of posterior:
-    if initial_samples is not None:
-        best_phi, _ = forwardkl_optimloop(approx_dist, joint_dist, initial_samples, 
-                                          use_reparameterisation, num_samples)
-        approx_dist.phi = best_phi
-
-    # Minimise forward KL divergence:
-    best_phi, best_loss = forwardkl_optimloop(approx_dist, joint_dist, posterior_samples, 
-                                              use_reparameterisation, verbose, num_samples)
-
-    # Update parameters of approximate dist:
-    approx_dist.phi = best_phi
-
-    return approx_dist
-
-def forwardkl_optimloop(approx_dist, joint_dist, provided_samples, use_reparameterisation, verbose, num_samples):
+def forward_kl(approx_dist, joint_dist=None, provided_samples=None, use_reparameterisation=False, num_samples=1000):
     
     # Create wrapper around forward kl loss function:
     def loss_and_grad(phi):
@@ -42,10 +23,7 @@ def forwardkl_optimloop(approx_dist, joint_dist, provided_samples, use_reparamet
 
         return (loss, grad)
 
-    loss_name = 'forward KL divergence'
-    best_phi, best_loss = minimise_loss(loss_and_grad, approx_dist, loss_name, verbose)
-
-    return (best_phi, best_loss)
+    return loss_and_grad
 
 def forwardkl_sampleposterior(phi, approx, posterior_samples):
     approx_lp = approx._func_dict["lp"](posterior_samples, phi)

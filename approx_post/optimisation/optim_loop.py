@@ -1,14 +1,13 @@
 import numpy as np
 from math import inf
 
-from .utilities import compute_phi_avg, initialise_optim_params
 from .algorithms import adam, adagrad
 from .bounds import create_bounds_containers, random_container_from_bounds
 from ..containers.jax import JaxContainer
 
 EPS = 1e-3
 
-def minimise_loss(loss_and_grad, approx_dist, loss_name, verbose):
+def fit_approximation(loss_and_grad, approx_dist, verbose=False):
     
     # Initialise optimisation parameters:
     optim_params = initialise_optim_params()
@@ -30,9 +29,6 @@ def minimise_loss(loss_and_grad, approx_dist, loss_name, verbose):
     best_loss = inf
     phi = phi_0
 
-    if verbose:
-        print(f'Now fitting approximate distribution by minimising {loss_name}.')
-
     while loop_flag:
         
         # Compute loss and gradient of metric:
@@ -51,7 +47,9 @@ def minimise_loss(loss_and_grad, approx_dist, loss_name, verbose):
         # Re-check loop condition:
         loop_flag = check_loop_cond(phi, optim_params, bounds_containers)
     
-    return (best_phi.contents, best_loss)
+    approx_dist.phi = best_phi
+
+    return approx_dist
 
 def update_phi(phi, grad, optim_params, bounds_containers):
 
@@ -93,3 +91,18 @@ def check_loop_cond(phi, optim_params, bounds_containers, max_iter=1000, phi_thr
         loop_flag = True
 
     return loop_flag
+
+def initialise_optim_params():
+    optim_params = {'method': "adam", 
+                    'beta_1': 0.9,
+                    'beta_2': 0.999,
+                    'lr': 10**-1,
+                    'eps': 10**-8,
+                    'phi_avg': 0.,
+                    'num_iter': 0}
+    return optim_params
+
+def compute_phi_avg(phi_new, optim_params):
+    phi_avg, beta, num_iter = (optim_params[key] for key in ('phi_avg', 'beta_1', 'num_iter'))
+    phi_avg = (beta*phi_new + (1-beta)*phi_avg)/(1-beta**num_iter)
+    return phi_avg

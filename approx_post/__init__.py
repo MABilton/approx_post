@@ -1,3 +1,5 @@
 from .distributions.approx import ApproximateDistribution
 from .distributions.joint import JointDistribution
-from .divergences import forward_kl, reverse_kl
+from .losses.forward_kl import forward_kl
+from .losses.reverse_kl import reverse_kl
+from .optimisation.optim_loop import fit_approximation

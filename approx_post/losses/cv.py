@@ -2,7 +2,7 @@ import numpy as np
 from functools import reduce
 from more_itertools.more import always_iterable
 
-from ..containers.base import ArrayContainer
+from ..containers.array import ArrayContainer
 from ..containers.numpy import NumpyContainer
     
 def apply_cv(val, cv):
