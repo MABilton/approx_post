@@ -54,7 +54,6 @@ def joint_from_model(model, noise_cov, prior_mean, prior_cov, model_del_theta):
         def lp_del_theta(theta, x_obs):
             prior_grad = prior_del_theta(theta, prior_mean, prior_cov)
             like_del_mean = likelihood_del_mean(x_obs, model(theta), noise_cov)
-            print(like_del_mean.shape)
             like_grad = jnp.einsum('aji,aj->ai', model_del_theta(theta), like_del_mean)
             return prior_grad + like_grad
     else:

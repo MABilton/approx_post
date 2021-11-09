@@ -8,12 +8,12 @@ class JaxContainer(ArrayContainer):
     _ATTR_TO_SEARCH = ('linalg', 'fft')
 
     # May want only floats stored for autograd purposes:    
-    def __init__(self, contents, floats_only=False, convert_inputs=True):
+    def __init__(self, contents, convert_inputs=True, floats_only=False):
         super().__init__(contents)
         if convert_inputs:
-          self._convert_contents_to_jax(floats_only, convert_inputs)
+          self._convert_contents_to_jax(floats_only)
 
-    def _convert_contents_to_jax(self, floats_only, convert_inputs):
+    def _convert_contents_to_jax(self, floats_only):
         # Check that everything can be converted to Jax Numpy array:
         for i, key_i in enumerate(self.keys()):
             element_i = self.contents[key_i]
@@ -23,8 +23,9 @@ class JaxContainer(ArrayContainer):
                 if floats_only:
                     element_i = element_i.astype(float)
             except TypeError:
-                raise TypeError(f"Element {i} of type {type(element_i)} " + \
-                                 "cannot be converted to jax.numpy array.")
+                error_msg = f"""Element {i} of type {type(element_i)} 
+                                cannot be converted to jax.numpy array."""
+                raise TypeError(error_msg)
             self.contents[key_i] = element_i
       
     def _manage_function_call(self, func, types, *args, **kwargs):
@@ -46,7 +47,8 @@ class JaxContainer(ArrayContainer):
             break
           except AttributeError:
             if i == len(self._ATTR_TO_SEARCH)-1:
-              raise AttributeError(f'The {func.__name__} method is not implemented in jax.numpy.')
+              error_msg = f'The {func.__name__} method is not implemented in jax.numpy.'
+              raise AttributeError(error_msg)
 
       for key in self.keys():
         args_i = self._prepare_args(args, key)

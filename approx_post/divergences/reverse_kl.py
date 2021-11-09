@@ -2,10 +2,10 @@ import numpy as np
 from math import inf
 
 # Internal imports:
+from .cv import apply_cv
 from ..optimisation.loop import minimise_loss
-from ..optimisation.utilities import apply_cv
 
-def fit(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num_samples=10):
+def fit(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num_samples=100):
 
     # Create wrapper around forward kl loss function:
     def loss_and_grad(phi):
@@ -22,11 +22,7 @@ def fit(approx_dist, joint_dist, use_reparameterisation=True, verbose=False, num
     # Update parameters of approximate dist:
     approx_dist.phi = best_phi
 
-    # Place results in dict:
-    results_dict = {'Fitted Distribution': approx_dist,
-                    'Loss': best_loss}
-
-    return results_dict
+    return approx_dist
 
 def reversekl_controlvariates(phi, approx, joint, num_samples):
 
@@ -39,12 +35,13 @@ def reversekl_controlvariates(phi, approx, joint, num_samples):
     approx_del_phi = approx._func_dict["lp_del_2"](theta_samples, phi)
 
     # Compute loss and gradient of loss values:
-    loss_samples = -1*np.mean(joint_lp - approx_lp, axis=0)
+    loss_samples = -1*(joint_lp - approx_lp).reshape(-1,1)
     grad_samples = -1*np.einsum("a,ai->ai", (joint_lp - approx_lp), approx_del_phi)
 
     # Apply control variates:
     control_variate = approx_del_phi
-    loss = apply_cv(loss_samples.reshape(-1,1), control_variate)
+    control_variate = approx_del_phi
+    loss = apply_cv(loss_samples, control_variate)
     grad = apply_cv(grad_samples, control_variate)
 
     return (loss, grad)

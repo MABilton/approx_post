@@ -1,8 +1,7 @@
-
 import numpy as np
 from math import inf
 
-from .utilities import apply_cv, compute_phi_avg, initialise_optim_params
+from .utilities import compute_phi_avg, initialise_optim_params
 from .algorithms import adam, adagrad
 from .bounds import create_bounds_containers, random_container_from_bounds
 from ..containers.jax import JaxContainer
@@ -43,7 +42,7 @@ def minimise_loss(loss_and_grad, approx_dist, loss_name, verbose):
         phi, optim_params = update_phi(phi, grad, optim_params, bounds_containers)
         
         if verbose:
-            print(f'Iteration {optim_params["num_iter"]}: \n Loss = {loss} \n Phi = {phi.contents}')
+            print(f'Iteration {optim_params["num_iter"]}:\n   Loss = {loss.item()} \n   Phi = {phi.contents}')
         
         # Store best parameters so far:
         if loss < best_loss:

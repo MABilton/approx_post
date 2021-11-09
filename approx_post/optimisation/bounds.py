@@ -44,6 +44,6 @@ def preprocess_bounds(bounds, phi_shape, default_val):
 
 def random_container_from_bounds(bound_container):
     lb, ub = bound_container['lb'], bound_container['ub']
-    random_vals = random_container_from_shapes(lb.shape())
+    random_vals = random_container_from_shapes(lb.shape)
     random_container = (ub - lb)*random_vals + lb
     return random_container

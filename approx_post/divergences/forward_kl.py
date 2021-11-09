@@ -1,11 +1,11 @@
 import numpy as np
 from math import inf
 
+from .cv import apply_cv
 from ..optimisation.loop import minimise_loss
-from ..optimisation.utilities import apply_cv
 
 def fit(approx_dist, joint_dist=None, initial_samples=None, posterior_samples=None,
-        use_reparameterisation=False, verbose=False, num_samples=100):
+        use_reparameterisation=False, verbose=False, num_samples=1000):
 
     # If we've been given samples to fit 'initial guess' of posterior:
     if initial_samples is not None:
@@ -20,11 +20,7 @@ def fit(approx_dist, joint_dist=None, initial_samples=None, posterior_samples=No
     # Update parameters of approximate dist:
     approx_dist.phi = best_phi
 
-    # Place results in dict:
-    results_dict = {'Fitted Distribution': approx_dist,
-                    'Loss': best_loss}
-
-    return results_dict
+    return approx_dist
 
 def forwardkl_optimloop(approx_dist, joint_dist, provided_samples, use_reparameterisation, verbose, num_samples):
     
@@ -67,30 +63,25 @@ def forwardkl_reparameterisation(phi, approx, joint, num_samples):
     # Evaluate approx lp and likelihood lp at samples:
     approx_lp = approx._func_dict["lp"](theta_samples, phi)
     joint_lp = joint._func_dict["lp"](theta_samples, joint.x)
-    
-    # Compute importance weights:
-    is_wts = compute_importance_weights(approx_lp, joint_lp, num_samples)
 
-    # Compute loss values:
-    loss_samples = is_wts*approx_lp
+    # Loss is just cross-entropy (i.e. samples of the joint):
+    loss_samples = approx_lp.reshape(-1,1)
 
     # Call gradient functions:
     approx_del_1 = approx._func_dict["lp_del_1"](theta_samples, phi)
     approx_del_2 = approx._func_dict["lp_del_2"](theta_samples, phi)
     joint_del_1 = joint._func_dict["lp_del_1"](theta_samples, joint.x)
     transform_del_phi = approx._func_dict["transform_del_2"](epsilon_samples, phi)
-    
-    # Use chain rule to compute derivative wrt phi:
-    joint_del_phi = np.einsum("aj,aji->ai", joint_del_1, transform_del_phi)
-    approx_del_phi = np.einsum("aj,aji->ai", approx_del_1, transform_del_phi) + approx_del_2
-    
-    # Compute loss grad values:
-    grad_samples = np.einsum("a,a,ai->ai", approx_lp, is_wts, joint_del_phi) + \
-                   np.einsum("a,a,ai->ai", 1-approx_lp, is_wts, approx_del_phi)
+    joint_del_phi = np.einsum("aj,aj...->a...", joint_del_1, transform_del_phi)
+    approx_del_phi = np.einsum("aj,aj...->a...", approx_del_1, transform_del_phi) + approx_del_2
+    grad_samples = np.einsum("a,a...->a...", approx_lp, joint_del_phi) + \
+                   np.einsum("a,a...->a...", 1-approx_lp, approx_del_phi)
+
+    loss_samples, grad_samples = compute_importance_samples(loss_samples, grad_samples, approx_lp, joint_lp)
 
     # Apply control variates:
     control_variate = approx_del_2
-    loss = -1*apply_cv(loss_samples.reshape(-1,1), control_variate)
+    loss = -1*apply_cv(loss_samples, control_variate)
     grad = -1*apply_cv(grad_samples, control_variate)
 
     return (loss, grad)
@@ -104,38 +95,30 @@ def forwardkl_controlvariates(phi, approx, joint, num_samples):
     approx_lp = approx._func_dict["lp"](theta_samples, phi)
     joint_lp = joint._func_dict["lp"](theta_samples, joint.x)
 
-    # Compute importance weights:
-    is_wts = compute_importance_weights(approx_lp, joint_lp, num_samples)
-
-    # Compute loss values:
-    loss_samples = is_wts*approx_lp
+    # Loss is just cross-entropy (i.e. samples of the joint):
+    loss_samples = approx_lp.reshape(-1,1)
 
     # Compute gradients:
     approx_del_phi = approx._func_dict["lp_del_2"](theta_samples, phi)
-    grad_samples = np.einsum("a,ai->ai", is_wts, approx_del_phi)
+    grad_samples = approx_del_phi
 
-    # Define the control variate we'll use:
-    cv = approx_del_phi
+    loss_samples, grad_samples = compute_importance_samples(loss_samples, grad_samples, approx_lp, joint_lp)
 
     # Apply control variates:
-    loss = -1*apply_cv(loss_samples.reshape(-1,1), cv)
-    grad = -1*apply_cv(grad_samples, cv)
+    control_variate = approx_del_phi
+    loss = -1*apply_cv(loss_samples, control_variate)
+    grad = -1*apply_cv(grad_samples, control_variate)
 
     return (loss, grad)
 
-def compute_importance_weights(approx_lp, joint_lp, num_samples):
+def compute_importance_samples(loss_samples, grad_samples, approx_lp, joint_lp):
 
-    # Compute unnormalised importance weight values:
-    unnorm_wts = np.exp(joint_lp - approx_lp)
+    log_wts = joint_lp - approx_lp
+    max_wts = np.max(log_wts)
+    unnorm_wts = np.exp(log_wts-max_wts)
+    denom = np.sum(unnorm_wts)
 
-    # Truncate extreme values (See: 'Truncated Importance Sampling'):
-    wts_cutoff = np.mean(unnorm_wts)*num_samples**(1/2) 
-    unnorm_wts = np.where(unnorm_wts>wts_cutoff, wts_cutoff, unnorm_wts)
+    loss_samples = np.einsum('a,ai->ai', unnorm_wts, loss_samples)/denom
+    grad_samples = np.einsum('a,a...->a...', unnorm_wts, grad_samples)/denom
 
-    # Compute normalisation factor:
-    normalisation = np.mean(unnorm_wts)
-
-    # Compute normalised weights:
-    norm_wts = unnorm_wts/normalisation
-
-    return norm_wts
+    return (loss_samples, grad_samples)

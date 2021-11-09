@@ -3,10 +3,9 @@ from .base import ArrayContainer
 
 class NumpyContainer(ArrayContainer):
 
-    def __init__(self, contents, convert_inputs=True):
+    def __init__(self, contents):
         super().__init__(contents)
-        if convert_inputs:
-          self._convert_contents_to_numpy()
+        self._convert_contents_to_numpy()
 
     def _convert_contents_to_numpy(self):
         for i, key_i in enumerate(self.keys()):
@@ -14,8 +13,9 @@ class NumpyContainer(ArrayContainer):
             try:
                 self.contents[key_i] = np.array(contents_i)
             except TypeError:
-                raise TypeError(f"Element {i} of type {type(contents_i)} " + \
-                                 "cannot be converted to numpy array.")
+                error_msg = f"""Element {i} of type {type(contents_i)} 
+                                cannot be converted to numpy array."""
+                raise TypeError(error_msg)
                 
     def _manage_function_call(self, func, types, *args, **kwargs):
 

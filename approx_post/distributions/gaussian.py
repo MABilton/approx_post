@@ -6,6 +6,7 @@ from jax.scipy.stats import multivariate_normal as mvn
 
 COV_MAX = 1e2
 COV_MIN = -1*COV_MAX
+VAR_MIN = 1e-2
 
 def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
 
@@ -43,7 +44,7 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
                  'transform_del_2': transform_del_2}
 
     # Create attribute dictionary:
-    phi = {'mean': np.ones(ndim),
+    phi = {'mean': np.zeros(ndim),
            'chol_diag': np.ones(ndim), 
            'chol_lowerdiag': np.zeros((ndim**2-ndim)//2)}
     phi_shape = {key: phi_i.shape for key, phi_i in phi.items()}
@@ -72,6 +73,8 @@ def assemble_cholesky(chol_diag, chol_lowerdiag):
 def covariance_from_cholesky(chol_diag, chol_lowerdiag):
     L = assemble_cholesky(chol_diag, chol_lowerdiag)
     cov = L @ L.T
+    # Ensure covariance matrix is symmetric:
+    cov = 0.5*(cov + cov.T)
     return cov
 
 def check_cholesky_inputs(diag, lower_diag):
@@ -96,7 +99,7 @@ def create_cov_bounds(max_var, ndim, cov_lb, cov_ub):
     lowerdiag_ones = np.ones(len_lowerdiag)
 
     # Create lower-bounds:
-    diag_lb = np.zeros(ndim)
+    diag_lb = VAR_MIN*np.ones(ndim)
     lowerdiag_lb = cov_lb*lowerdiag_ones if cov_lb is not None else COV_MIN*lowerdiag_ones
 
     # Create upper-bounds:
