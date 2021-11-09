@@ -34,22 +34,22 @@ class ApproximateDistribution:
         self.phi_lb = attr_dict['phi_lb']
         self.phi_ub = attr_dict['phi_ub']
 
-    def logpdf(self, theta):
+    def logpdf(self, theta, x):
         if self.phi is not None:
-            lp = self._fun_dict['lp'](theta, self.phi)
+            lp = self._fun_dict['lp'](theta, self.phi(x))
         else:
             error_message = '''Need to assign parameters phi to distribution 
                                before computing log-probabilities.'''
             raise ValueError(error_message)
         return lp
 
-    def sample(self, num_samples): 
+    def sample(self, num_samples, x=None): 
         if self.phi is not None:
             try:
-                samples = self._fun_dict['sample'](num_samples, self.phi)
+                samples = self._fun_dict['sample'](num_samples, self.phi(x))
             except KeyError:
                 epsilon_samples = self._fun_dict['sample_base'](num_samples)
-                samples = self._fun_dict['transform'](epsilon_samples, self.phi)
+                samples = self._fun_dict['transform'](epsilon_samples, self.phi(x))
         else:
             error_message = '''Need to assign parameters phi to 
                                distribution before sampling.'''
@@ -57,11 +57,7 @@ class ApproximateDistribution:
         return samples  
     
     def __repr__(self):
-        try:
-            repr_str = f'{self.__class__.__name__} object with parameters {repr(self.phi)}'
-        except AttributeError:
-            repr_str = f'{self.__class__.__name__} object with no specified parameters'
-        return repr_str
+        return f'{self.__class__.__name__}
 
     @classmethod
     def load(cls, load_dir):
