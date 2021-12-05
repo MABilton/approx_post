@@ -50,7 +50,7 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
     phi_shape = {key: phi_i.shape for key, phi_i in phi.items()}
     phi_lb, phi_ub = create_cov_bounds(var_ub, ndim, cov_lb, cov_ub)
     phi_lb['mean'], phi_ub['mean'] = mean_lb, mean_ub
-    attr_dict = {'phi': phi,
+    attr_dict = {'params': phi,
                  'phi_shape': phi_shape,
                  'phi_lb': phi_lb,
                  'phi_ub': phi_ub}

@@ -2,14 +2,21 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.random import normal as normal_dist
 
-# class AmortisedApproximation(ApproximateDistribution):
+class AmortisedApproximation(ApproximateDistribution):
 
-    # @classmethod
-    # def nn(approx, x_values)
+    @classmethod
+    def nn(approx, x_values):
+        phi_dim = NumpyContainer(self.params).shape
+        x_dim = x_values.shape[1]
+        nn, wts = create_nn(x_dim, phi_dim)
+        return cls(approx, nn, wts, x_values)
 
-    # def __init__(approx, phi_functionm, function_params, x_values):
+    def __init__(approx, phi_func, params, x_values):
+        func_dict = approx._func_dict
         
-    #     super().__init__(func_dict, attr_dict, save_dict)
+        super().__init__(approx._func_dict, approx._attr_dict, approx._save_dict)
+        self.params = params
+        self._func_dict['phi'] = phi_func
 
 def create_nn(x_dim, phi_dim, num_layers=5, width=10, activation='relu', output_softmax=True):
 

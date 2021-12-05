@@ -10,12 +10,13 @@ class NumpyContainer(ArrayContainer):
     def _convert_contents_to_numpy(self):
         for i, key_i in enumerate(self.keys()):
             contents_i = self.contents[key_i]
-            try:
-                self.contents[key_i] = np.array(contents_i)
-            except TypeError:
-                error_msg = f"""Element {i} of type {type(contents_i)} 
-                                cannot be converted to numpy array."""
-                raise TypeError(error_msg)
+            if not issubclass(type(contents_i), ArrayContainer):
+              try:
+                  self.contents[key_i] = np.array(contents_i)
+              except TypeError:
+                  error_msg = f"""Element {i} of type {type(contents_i)} 
+                                  cannot be converted to numpy array."""
+                  raise TypeError(error_msg)
                 
     def _manage_function_call(self, func, types, *args, **kwargs):
 

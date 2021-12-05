@@ -7,7 +7,7 @@ from ..containers.jax import JaxContainer
 
 EPS = 1e-3
 
-def fit_approximation(loss_and_grad, approx_dist, verbose=False):
+def fit_approximation(loss_and_grad, approx_dist, x, verbose=False):
     
     # Initialise optimisation parameters:
     optim_params = initialise_optim_params()
@@ -17,25 +17,25 @@ def fit_approximation(loss_and_grad, approx_dist, verbose=False):
                                                  approx_dist.phi_lb, 
                                                  approx_dist.phi_ub)
 
-    # Initialise phi if not specified:
-    if approx_dist.phi is None:
-        phi_0 = random_container_from_bounds(bounds_containers)
-        phi_0 = JaxContainer(phi_0.contents)
-    else:
-        phi_0 = JaxContainer(approx_dist.phi)    
+    # Initialise params if not specified:
+    # if approx_dist.phi is None:
+    #     phi_0 = random_container_from_bounds(bounds_containers)
+    #     phi_0 = JaxContainer(phi_0.contents)
+    # else:
+    #     phi_0 = JaxContainer(approx_dist.phi(x))    
     
     # Initialise loop variables:
     loop_flag = True
     best_loss = inf
-    phi = phi_0
+    params = JaxContainer(approx_dist.params)
 
     while loop_flag:
         
         # Compute loss and gradient of metric:
-        loss, grad = loss_and_grad(phi)
+        loss, grad = loss_and_grad(params, x)
 
         # Update parameters with optimisation algorithm:
-        phi, optim_params = update_phi(phi, grad, optim_params, bounds_containers)
+        params, optim_params = update_params(params, grad, optim_params, bounds_containers)
         
         if verbose:
             print(f'Iteration {optim_params["num_iter"]}:\n   Loss = {loss.item()} \n   Phi = {phi.contents}')

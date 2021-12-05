@@ -7,9 +7,15 @@ class ArrayContainer(np.lib.mixins.NDArrayOperatorsMixin):
 
     ARRAY_TYPES = (np.ndarray, DeviceArray)
 
-    def __init__(self, contents):
+    def __init__(self, contents, containerise_values=True):
         self.contents = contents
         self._type = dict if hasattr(self.contents, 'keys') else list     
+        # If nested dictionaries, convert all of these:
+        if containerise_values:
+          to_covert = [key for key in self.keys() 
+                       if hasattr(self[key], 'keys') and not issubclass(type(self[key]), ArrayContainer)]
+          for key in to_covert:
+              self[key] = self.__class__(self[key])
                     
     def __len__(self):
         return len(self.contents)
@@ -49,7 +55,21 @@ class ArrayContainer(np.lib.mixins.NDArrayOperatorsMixin):
       shapes = [self[key].shape for key in self.keys()]
       if self._type is dict:
         shapes = dict(zip(self.keys(), shapes))
+      return shapes
+
+    @property
+    def shape_container(self):
+      shapes = self.shape
       return self.__class__(shapes)
+
+    @property
+    def unpacked(self):
+      output = [val.unpacked if issubclass(type(val), ArrayContainer)
+                else val
+                for val in self.values()]
+      if self._type is dict:
+        output = dict(zip(self.keys(), output))
+      return output
 
     # Indexing functions:
     def __getitem__(self, key):
@@ -164,10 +184,18 @@ class ArrayContainer(np.lib.mixins.NDArrayOperatorsMixin):
                           use 'my_container[new_key] = new_value' instead."""
             raise AttributeError(error_msg)
 
+    def sum(self):
+      for i, key in enumerate(self.keys()):
+        if i == 0:
+          sum_results = self[key].copy()
+        else:
+          sum_results += self[key]
+      return sum_results
+
     # numpy.all() and numpy.any() equivalents:
     def all(self):
       for key in self.keys():
-        if np.all(self.contents[key]):
+        if self.contents[key].all():
           continue
         else:
           return False
@@ -175,7 +203,7 @@ class ArrayContainer(np.lib.mixins.NDArrayOperatorsMixin):
 
     def any(self):
       for key in self.keys():
-        if np.any(self.contents[key]):
+        if self.contents[key].any():
           return True
       return False
 

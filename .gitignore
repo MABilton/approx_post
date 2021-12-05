@@ -1,4 +1,11 @@
-build*
-approx_post.egg*
-*__pycache__*
-*checkpoint*
+# Compiled python modules.
+*__pycache__
+
+# Setuptools distribution folder.
+/dist/
+
+# Python egg metadata, regenerated from source files by setuptools.
+*.egg-info
+
+# iPython Notebook checkpoints:
+*.ipynb_checkpoints

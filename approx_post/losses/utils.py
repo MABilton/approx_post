@@ -4,18 +4,29 @@ from more_itertools.more import always_iterable
 
 from ..containers.array import ArrayContainer
 from ..containers.numpy import NumpyContainer
+
+def compute_loss_del_w(approx, params, x, loss_del_phi):
     
+    phi_del_w = approx._func_dict['phi_del_w'](params, x)
+    
+    # 'Flatten' gradients into 2D arrays:
+    loss_del_w = np.einsum('ai,ij->aj', phi_del_w, loss_del_phi)
+
+    # Reshape gradient to correct shape:
+
+    return loss_del_w
+
 def apply_cv(val, cv):
 
-    val_in = NumpyContainer([val]) if not issubclass(type(val), ArrayContainer) else val        
+    val_in = NumpyContainer([val]) if not issubclass(type(val), ArrayContainer) else val    
 
     val_vec = vectorise_values(val_in)
     cv_vec = vectorise_values(cv)
-    var = np.mean(np.einsum("ai,aj->aij", cv_vec, cv_vec), axis=0)
-    cov = np.mean(np.einsum("aj,ai->aij", (val_vec-np.mean(val_vec, axis=0)), cv_vec), axis=0)
+    var = np.mean(np.einsum("abi,abj->abij", cv_vec, cv_vec), axis=0)
+    cov = np.mean(np.einsum("abj,abi->abij", (val_vec-np.mean(val_vec, axis=0)), cv_vec), axis=0)
     a = np.linalg.solve(var, cov)
 
-    val_vec = np.mean(val_vec - np.einsum("ij,ai->aj", a, cv_vec), axis=0)
+    val_vec = np.mean(val_vec - np.einsum("ij,abi->abj", a, cv_vec), axis=0)
     val = reshape_output(val_vec, val)
     return val
 

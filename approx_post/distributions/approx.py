@@ -8,14 +8,14 @@ from ..containers.jax import JaxContainer
 class ApproximateDistribution:
 
     @classmethod
-    def gaussian(cls, ndim, phi=None, mean_lb=None, mean_ub=None, var_ub=None, cov_lb=None, cov_ub=None):
+    def gaussian(cls, ndim, params=None, mean_lb=None, mean_ub=None, var_ub=None, cov_lb=None, cov_ub=None):
         
         # Create functions and attributes to pass to constructor:
         func_dict, attr_dict = \
             create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub)
 
-        if phi is not None:
-            attr_dict['phi'] = phi
+        if params is not None:
+            attr_dict['params'] = params
 
         # Attribute values to store with saved distribution:
         save_dict = {'constructor': 'gaussian',
@@ -26,15 +26,21 @@ class ApproximateDistribution:
         return cls(func_dict, attr_dict, save_dict)
 
     def __init__(self, func_dict, attr_dict, save_dict):
-        # func_dict = 
         self._func_dict = func_dict
+        self._func_dict['phi'] = lambda params, x: params 
         self._save_dict = save_dict
-        self.phi = attr_dict['phi']
+        self.params = attr_dict['params']
         self.phi_shape = attr_dict['phi_shape']
         self.phi_lb = attr_dict['phi_lb']
         self.phi_ub = attr_dict['phi_ub']
 
-    def logpdf(self, theta, x):
+    def initialise_params():
+        pass
+
+    def phi(self, x):
+        return self._func_dict['phi'](x, self.params)
+
+    def logpdf(self, theta, x=None):
         if self.phi is not None:
             lp = self._fun_dict['lp'](theta, self.phi(x))
         else:
@@ -57,7 +63,7 @@ class ApproximateDistribution:
         return samples  
     
     def __repr__(self):
-        return f'{self.__class__.__name__}
+        return f'{self.__class__.__name__}'
 
     @classmethod
     def load(cls, load_dir):
@@ -83,7 +89,7 @@ class ApproximateDistribution:
 
     def save(self, save_name, save_dir='.', indent=4):
         to_save = self._save_dict.copy()
-        to_save['phi'] = list(self.phi)
+        to_save['params'] = list(self.params)
         save_json = json.dumps(to_save, indent)
         save_dir = os.path.join(save_dir, save_name)
         with open(save_dir, 'w') as f:
