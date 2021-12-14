@@ -5,21 +5,21 @@ from jax.scipy.stats import multivariate_normal as mvn
 class JointDistribution:
 
     @classmethod
-    def from_model(cls, x, model, noise_cov, prior_mean, prior_cov, model_grad=None):
+    def from_model(cls, model, noise_cov, prior_mean, prior_cov, model_grad=None):
         func_dict = joint_from_model(model, noise_cov, prior_mean, prior_cov, model_grad)
-        return cls(func_dict, x)
+        return cls(func_dict)
         
     @classmethod
-    def from_joint(cls, lp, x, lp_del_theta=None):
+    def from_joint(cls, lp, lp_del_theta=None):
         func_dict = {'lp': lp, 'lp_del_1': lp_del_theta}
-        return cls(func_dict, x)
+        return cls(func_dict)
 
     @classmethod
-    def from_prior_and_likelihood(cls, x, prior_lp, likelihood_lp, prior_lp_grad=None, likelihood_lp_grad=None):
+    def from_prior_and_likelihood(cls, prior_lp, likelihood_lp, prior_lp_grad=None, likelihood_lp_grad=None):
         func_dict = joint_from_prior_and_likelihood(prior_lp, likelihood_lp, prior_lp_grad, likelihood_grad)
-        return cls(func_dict, x)
+        return cls(func_dict)
 
-    def __init__(self, func_dict, x):
+    def __init__(self, func_dict):
         self._func_dict = func_dict
 
     def logpdf(self, theta, x):
@@ -33,23 +33,24 @@ def joint_from_model(model_fun, noise_cov, prior_mean, prior_cov, model_del_thet
     # Ensure model functions output correct shapes:
     theta_dim = len(prior_mean)
     x_dim = noise_cov.shape[-1]
-    
     model = lambda theta : model_fun(theta).reshape(-1, x_dim)
 
     mvn_vmap_mean = jax.vmap(mvn.logpdf, in_axes=(None,0,None), out_axes=1)
-    def lp(theta, x_obs): # theta.shape = (num_samples, theta_dim), x_obs.shape = (num_batches, num_obs, x_dim)
+    def lp(theta, x_obs): 
+        # theta.shape = (num_samples, theta_dim), 
+        # x_obs.shape = (num_batch, num_obs, x_dim)
         num_batch, num_samples = x_obs.shape[0], theta.shape[0]
         prior_lp = mvn.logpdf(theta, prior_mean, prior_cov) # prior_lp.shape = (num_samples,)
         x_pred = model(theta) # x_pred.shape = (num_samples, x_dim)
         like_lp = mvn_vmap_mean(x_obs, x_pred, noise_cov) # like_lp.shape = (num_batches, num_samples,  num_obs)
         # Sum over num_obs axis:
         joint_lp = prior_lp + jnp.sum(like_lp, axis=-1) # joint_lp.shape = (num_batches, num_samples)
-        return joint_lp.reshape(num_batch, num_samples)
+        return joint_lp
     
     # If model gradients specified, can construct functions for gradient of joint lp wrt theta,
     # which can be used to perform reparameterisation trick:
     if model_del_theta_fun is not None:
-        
+                
         model_del_theta = lambda theta : model_del_theta_fun(theta).reshape(-1, x_dim, theta_dim)
 
         mvn_del_mean = jax.jacfwd(mvn.logpdf, argnums=1)
@@ -59,21 +60,24 @@ def joint_from_model(model_fun, noise_cov, prior_mean, prior_cov, model_del_thet
             lp_grad = mvn_del_mean(theta, prior_mean, prior_cov)
             return lp_grad.reshape(-1, theta_dim) # lp_grad.shape = (num_samples, theta_dim)
 
-        def likelihood_del_mean(x_obs, x_pred, noise_cov): # x_obs.shape = (num_batch, num_obs, x_dim), x_pred.shape = (num_sample, x_dim)
-            num_batch, num_samples = x_obs.shape[0], x_pred.shape[0]
+        def likelihood_del_mean(x_obs, x_pred, noise_cov): 
+            # x_obs.shape = (num_batch, num_obs, x_dim), 
+            # x_pred.shape = (num_sample, x_dim)
             lp_grad = mvn_del_mean_vmap(x_obs, x_pred, noise_cov) # lp_grad.shape = (num_batch, num_samples, num_obs, x_dim)
             # Sum over lp of all observations made:
             lp_grad = jnp.sum(lp_grad, axis=2, keepdims=False) # lp_grad.shape = (num_batch, num_samples, x_dim)
-            return lp_grad.reshape(num_batch, num_samples, x_dim)
+            return lp_grad
 
         def lp_del_theta(theta, x_obs):
-            num_batch, num_samples = x_obs.shape[0], theta.shape[0]
+            # theta.shape = (num_samples, theta_dim), 
+            # x_obs.shape = (num_batch, num_obs, x_dim)
             prior_grad = prior_del_theta(theta, prior_mean, prior_cov) # prior_grad.shape = (num_samples, theta_dim)
             like_del_mean = likelihood_del_mean(x_obs, model(theta), noise_cov) # like_del_mean.shape = (num_batch, num_samples, x_dim)
             mean_del_theta = model_del_theta(theta) # mean_del_theta.shape = (num_samples, x_dim, theta_dim)
+            # print(mean_del_theta.shape, like_del_mean.shape)
             like_grad = jnp.einsum('bji,abj->abi', mean_del_theta, like_del_mean) # like_grad.shape = (num_batch, num_samples, theta_dim)
             lp_del_theta = prior_grad + like_grad # lp_del_theta.shape = (num_batch, num_samples, theta_dim)
-            return lp_del_theta.reshape(num_batch, num_samples, theta_dim)
+            return lp_del_theta
     else:
         lp_del_theta = None
 
@@ -88,7 +92,9 @@ def joint_from_prior_and_likelihood(prior_lp_fun, likelihood_lp_fun, theta_dim, 
     # Reshape functions:
     prior_lp = lambda theta : prior_lp_fun(theta).reshape(-1,)
     def likelihood_lp(theta, x):
-        num_batch, num_samples = x.shape[0], theta.shape[0]
+        # theta.shape = (num_samples, theta_dim), 
+        # x_obs.shape = (num_batch, num_obs, x_dim)
+        num_batch, num_samples = x_obs.shape[0], theta.shape[0]
         return likelihood_lp_fun(theta, x).reshape(num_batch, num_samples)
     # Log-prob function which calls above two functions:
     def lp(theta, x_obs):
@@ -112,3 +118,7 @@ def joint_from_prior_and_likelihood(prior_lp_fun, likelihood_lp_fun, theta_dim, 
                  'lp_del_1': lp_del_theta}
 
     return func_dict
+
+# Convenience function to get num_samples and num_batch:
+def get_batch_and_samples(x):
+    return (x.shape[0], x.shape[1])

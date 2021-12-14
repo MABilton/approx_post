@@ -9,41 +9,87 @@ COV_MIN = -1*COV_MAX
 VAR_MIN = 1e-2
 
 def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
+    
+    base_mean = np.zeros(ndim)
+    base_cov = np.identity(ndim)
+
+    # Assembly functions:
+    def assemble_cholesky(chol_diag, chol_lowerdiag): 
+        # chol_diag.shape = (ndim, )
+        # chol_lowerdiag.shape = (0.5*(ndim**2 - ndim), )
+        # Check that inputs are compatable:
+        check_cholesky_inputs(chol_diag, chol_lowerdiag)
+        # Form covariance matrix from Cholesky decomposition:
+        L = jnp.diag(chol_diag) # L.shape = (ndim, ndim)
+        lower_diag_idx = jnp.tril_indices(ndim, k=-1) 
+        L = jax.ops.index_update(L, lower_diag_idx, chol_lowerdiag)
+        return L
+
+    def covariance_from_cholesky(chol_diag, chol_lowerdiag):
+        # chol_diag.shape = (ndim, )
+        # chol_lowerdiag.shape = (0.5*(ndim**2 - ndim), )
+        L = assemble_cholesky(chol_diag, chol_lowerdiag)
+        cov = L @ L.T
+        # Ensure covariance matrix is symmetric:
+        cov = 0.5*(cov + cov.T)
+        return cov
+
+    # cov_vmap = jax.vmap(covariance_from_cholesky, in_axes=(0,0), out_axes=0)
+
+    # Sampling functions:
+
+    def sample_base(num_samples):
+        samples = mvn_sample(base_mean, base_cov, size=num_samples)
+        return samples.reshape(num_samples, ndim)
+
+    def transform(epsilon, phi): 
+        # NB: we'll vectorise over batch dimension of phi input with vmap
+        # epsilon.shape = (num_samples, ndim)
+        chol = covariance_from_cholesky(phi['chol_diag'], phi['chol_lowerdiag']) # chol.shape = (ndim, ndim)
+        # Need to add singleton dimension for broadcasting purposes:
+        mean = phi['mean'] # mean.shape = (ndim,)
+        # NB: Need '...' since we must vectorise function over num_samples dimension of epsilon when computing derivative of transform function:
+        theta = mean + jnp.einsum('ij,...j->...i', chol, epsilon) # theta.shape = (num_samples, ndim)
+        return theta
+
+    transform_vmap = jax.vmap(transform, in_axes=(None,0), out_axes=0)
 
     def sample(num_samples, phi):
-        cov = covariance_from_cholesky(phi['chol_diag'], phi['chol_lowerdiag'])
-        samples = mvn_sample(phi["mean"], cov, size=num_samples)
-        return samples.reshape(num_samples, ndim)
-    
-    mean = np.zeros(ndim)
-    cov = np.identity(ndim)
-    def sample_base(num_samples):
-        samples = mvn_sample(mean, cov, size=num_samples)
-        return samples.reshape(num_samples, ndim)
+        epsilon = sample_base(num_samples) # epsilon.shape = (num_samples, ndim)
+        theta = transform_vmap(epsilon, phi) # theta.shape = (num_batch, num_samples, ndim)
+        return theta
 
-    def transform(epsilon, phi):
-        L = assemble_cholesky(phi['chol_diag'], phi['chol_lowerdiag'])
-        theta = phi["mean"] + jnp.einsum('ij,aj->ai', L, epsilon)
-        return theta.reshape(-1, ndim)
+    # Log probability function:
 
     def lp(theta, phi):
-        cov = covariance_from_cholesky(phi['chol_diag'], phi['chol_lowerdiag'])
-        return mvn.logpdf(theta, mean=phi['mean'], cov=cov)
+        # NB: we'll vectorise over batch dimension of phi input with vmap 
+        # theta.shape = (num_samples, ndim)
+        mean = phi['mean'] # mean.shape = (ndim,)
+        cov = covariance_from_cholesky(phi['chol_diag'], phi['chol_lowerdiag']) # cov.shape = (ndim, ndim)
+        log_prob = mvn.logpdf(theta, mean=mean, cov=cov) # log_prob.shape = (num_samples,)
+        return log_prob
 
-    lp_del_1 = jax.vmap(jax.jacfwd(lp, argnums=0), in_axes=(0,None))
-    lp_del_2 = jax.vmap(jax.jacfwd(lp, argnums=1), in_axes=(0,None))
-    transform_del_2 = jax.jacfwd(transform, argnums=1)
+    # Vectorise log-probability over batch and sample dimensions:
+    lp_vmap = jax.vmap(lp, in_axes=(0,0))
+
+    # Gradient functions - NB: must vectorise over num_samples axis of theta input when computing gradients so that we don't compute cross-derivatives between samples (e.g. we don't compute the gradient of the log-probability of the i'th sample wrt to j'th sample):
+    transform_del_2 = jax.vmap(jax.vmap(jax.jacfwd(transform, argnums=1), in_axes=(0,None)), in_axes=(None,0))
+    lp_del_1 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=0), in_axes=(0,None)), in_axes=(0,0))
+    # lp_del_1 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=0), in_axes=(0,0), out_axes=0), in_axes=(1,None))
+    lp_del_2 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=1), in_axes=(0,None)), in_axes=(0,0))
+    # lp_del_2 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=1), in_axes=(0,0), out_axes=0), in_axes=(1,None))
 
     # Create dictionary of functions:
-    func_dict = {'lp': lp,
+    func_dict = {'lp': lp_vmap,
                  'sample': sample,
                  'sample_base': sample_base,
-                 'transform': transform,
+                 'transform': transform_vmap,
                  'lp_del_1': lp_del_1,
                  'lp_del_2': lp_del_2,
                  'transform_del_2': transform_del_2}
 
     # Create attribute dictionary:
+
     phi = {'mean': np.zeros(ndim),
            'chol_diag': np.ones(ndim), 
            'chol_lowerdiag': np.zeros((ndim**2-ndim)//2)}
@@ -57,37 +103,19 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
 
     return (func_dict, attr_dict)
 
-def assemble_cholesky(chol_diag, chol_lowerdiag):
-    
-    # Check that inputs are compatable:
-    check_cholesky_inputs(chol_diag, chol_lowerdiag)
-
-    # Form covariance matrix from Cholesky decomposition:
-    dim = len(chol_diag)
-    L = jnp.diag(chol_diag)
-    lower_diag_idx = jnp.tril_indices(dim, k=-1)
-    L = jax.ops.index_update(L, lower_diag_idx, chol_lowerdiag)
-
-    return L
-
-def covariance_from_cholesky(chol_diag, chol_lowerdiag):
-    L = assemble_cholesky(chol_diag, chol_lowerdiag)
-    cov = L @ L.T
-    # Ensure covariance matrix is symmetric:
-    cov = 0.5*(cov + cov.T)
-    return cov
-
 def check_cholesky_inputs(diag, lower_diag):
 
-    dim = len(diag)
+    dim = diag.shape[-1]
     try:
-        assert len(lower_diag) == int(0.5*(dim**2 - dim))
+        lowerdiag_len =  lower_diag.shape[-1]
+        req_len = int(0.5*(dim**2 - dim))
+        assert lowerdiag_len == req_len
     except AssertionError:
-        error_message = f'''Array of diagonal values contains {dim} elements, 
-                            but array of lower diagonal elements contained 
-                            {len(lower_diag)} elements. Instead, expected 
-                            {0.5*(dim**2 - dim)} lower diagonal elements.'''
-        raise ValueError(error_message)
+        error_message = (f'Array of diagonal values contains {dim} elements,',
+                         'but array of lower diagonal elements contained',
+                         f'{lowerdiag_len} elements. Instead, expected',
+                         f'{req_len} lower diagonal elements.')
+        raise ValueError(' '.join(error_message))
 
 def create_cov_bounds(max_var, ndim, cov_lb, cov_ub):
 

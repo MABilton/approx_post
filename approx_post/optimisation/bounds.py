@@ -1,22 +1,21 @@
 from numbers import Number
 import numpy as np
-
-from ..containers.numpy import NumpyContainer
-from ..containers.random import random_container_from_shapes
+from arraytainers import Numpytainer
 
 MAX_PHI = 1e2
 MIN_PHI = -1*MAX_PHI
 
-def create_bounds_containers(phi_shape, phi_lb, phi_ub):
+def create_bounds(approx):
+
+    phi_shape, phi_lb, phi_ub = approx.phi_shape, approx.phi_lb, approx.phi_ub
 
     phi_lb = preprocess_bounds(phi_lb, phi_shape, default_val=MIN_PHI)
     phi_ub = preprocess_bounds(phi_ub, phi_shape, default_val=MAX_PHI)
 
     # Convert bounds to Numpy Containers and place into dictionary:
-    bounds_containers = {'lb': NumpyContainer(phi_lb),
-                         'ub': NumpyContainer(phi_ub)}
+    bounds = Numpytainer({'lb':phi_lb, 'ub':phi_ub})
 
-    return bounds_containers
+    return bounds
 
 def preprocess_bounds(bounds, phi_shape, default_val):
 
@@ -42,8 +41,7 @@ def preprocess_bounds(bounds, phi_shape, default_val):
 
     return bounds
 
-def random_container_from_bounds(bound_container):
-    lb, ub = bound_container['lb'], bound_container['ub']
-    random_vals = random_container_from_shapes(lb.shape)
-    random_container = (ub - lb)*random_vals + lb
-    return random_container
+def random_from_bounds(bounds):
+    bounds_range = bounds['ub'] - bounds['lb']
+    random_vals = bounds_range.apply(lambda x : np.random.rand(*x.tolist()))
+    return random_vals*bounds_range + bounds['lb']

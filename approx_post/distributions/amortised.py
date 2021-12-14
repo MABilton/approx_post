@@ -2,6 +2,8 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.random import normal as normal_dist
 
+from .approx import ApproximateDistribution
+
 class AmortisedApproximation(ApproximateDistribution):
 
     @classmethod

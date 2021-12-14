@@ -1,57 +1,54 @@
 import numpy as np
 from math import inf
-
+from arraytainers import Jaxtainer
 from .algorithms import adam, adagrad
-from .bounds import create_bounds_containers, random_container_from_bounds
-from ..containers.jax import JaxContainer
+from .bounds import create_bounds
+
+from ..distributions.amortised import AmortisedApproximation
 
 EPS = 1e-3
 
 def fit_approximation(loss_and_grad, approx_dist, x, verbose=False):
     
+    # Ensure x contains a 'batch' and 'num_obs' dimension:
+    for _ in range(3 - x.ndim):
+        x = x[None,:] 
+
     # Initialise optimisation parameters:
     optim_params = initialise_optim_params()
 
     # Create bounds containers:
-    bounds_containers = create_bounds_containers(approx_dist.phi_shape, 
-                                                 approx_dist.phi_lb, 
-                                                 approx_dist.phi_ub)
-
-    # Initialise params if not specified:
-    # if approx_dist.phi is None:
-    #     phi_0 = random_container_from_bounds(bounds_containers)
-    #     phi_0 = JaxContainer(phi_0.contents)
-    # else:
-    #     phi_0 = JaxContainer(approx_dist.phi(x))    
+    bounds_containers = create_bounds(approx_dist)
     
     # Initialise loop variables:
     loop_flag = True
-    best_loss = inf
-    params = JaxContainer(approx_dist.params)
-
+    best_loss = inf 
+    params = Jaxtainer(approx_dist.params)
+    clip_output = not isinstance(approx_dist, AmortisedApproximation)
+    
     while loop_flag:
         
         # Compute loss and gradient of metric:
         loss, grad = loss_and_grad(params, x)
 
         # Update parameters with optimisation algorithm:
-        params, optim_params = update_params(params, grad, optim_params, bounds_containers)
+        params, optim_params = update_params(params, grad, optim_params, bounds_containers, clip_output)
         
         if verbose:
-            print(f'Iteration {optim_params["num_iter"]}:\n   Loss = {loss.item()} \n   Phi = {phi.contents}')
+            print(f'Iteration {optim_params["num_iter"]}:\n   Loss = {loss.item()}, Params = {params.unpacked}')
         
         # Store best parameters so far:
         if loss < best_loss:
-            best_loss, best_phi = loss, phi
+            best_loss, best_params = loss, params
 
         # Re-check loop condition:
-        loop_flag = check_loop_cond(phi, optim_params, bounds_containers)
+        loop_flag = check_loop_cond(params, optim_params)
     
-    approx_dist.phi = best_phi
+    approx_dist.params = best_params.unpacked
 
     return approx_dist
 
-def update_phi(phi, grad, optim_params, bounds_containers):
+def update_params(params, grad, optim_params, bounds_containers, clip_output):
 
     # Apply optimisation method:
     method = optim_params["method"]
@@ -61,31 +58,27 @@ def update_phi(phi, grad, optim_params, bounds_containers):
         update, optim_params = adagrad(grad, optim_params)
 
     # Update d - convert to np.array in case d is a Jax array:
-    phi_new = phi - update
+    params_new = params - update
+
     # Clip updated d so that it lies within param_bounds:
-    lb, ub = bounds_containers['lb'], bounds_containers['ub']
-    phi_new[phi_new<lb] = lb[phi_new<lb]
-    phi_new[phi_new>ub] = ub[phi_new>ub]
+    if clip_output:
+        lb, ub = bounds_containers['lb'], bounds_containers['ub']
+        params_new[params_new<lb] = lb[params_new<lb]
+        params_new[params_new>ub] = ub[params_new>ub]
 
     # Update phi_avg:
-    optim_params['phi_avg'] = compute_phi_avg(phi_new, optim_params)
+    optim_params['params_avg'] = compute_params_avg(params_new, optim_params)
     
-    return (phi_new, optim_params)
+    return (params_new, optim_params)
 
-def check_loop_cond(phi, optim_params, bounds_containers, max_iter=1000, phi_threshold=1e-7):
+def check_loop_cond(params, optim_params, max_iter=1000, params_threshold=1e-7):
     
     # Check change in phi vs mean:
-    phi_avg, num_iter = optim_params['phi_avg'], optim_params['num_iter']
-    phi_change_flag = (abs(phi-phi_avg) < phi_threshold).all()
-
-    # Check if phi currently at boundary:
-    lb, ub = bounds_containers['lb'], bounds_containers['ub']
-    boundary_flag = (abs(phi - lb)<EPS).all() | (abs(phi - ub) < EPS).all()
+    params_avg, num_iter = optim_params['params_avg'], optim_params['num_iter']
+    params_change_flag = (abs(params-params_avg) < params_threshold).all()
 
     # Check all loop conditions:
-    if num_iter >= max_iter:
-        loop_flag = False
-    elif phi_change_flag or boundary_flag:
+    if (num_iter >= max_iter) or params_change_flag:
         loop_flag = False
     else:
         loop_flag = True
@@ -98,11 +91,11 @@ def initialise_optim_params():
                     'beta_2': 0.999,
                     'lr': 10**-1,
                     'eps': 10**-8,
-                    'phi_avg': 0.,
+                    'params_avg': 0.,
                     'num_iter': 0}
     return optim_params
 
-def compute_phi_avg(phi_new, optim_params):
-    phi_avg, beta, num_iter = (optim_params[key] for key in ('phi_avg', 'beta_1', 'num_iter'))
-    phi_avg = (beta*phi_new + (1-beta)*phi_avg)/(1-beta**num_iter)
-    return phi_avg
+def compute_params_avg(params_new, optim_params):
+    params_avg, beta, num_iter = (optim_params[key] for key in ('params_avg', 'beta_1', 'num_iter'))
+    params_avg = (beta*params_new + (1-beta)*params_avg)/(1-beta**num_iter)
+    return params_avg

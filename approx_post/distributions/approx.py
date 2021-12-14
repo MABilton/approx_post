@@ -1,9 +1,9 @@
 import json
 from json import JSONDecodeError
 import os
+import numpy as np
 
 from .gaussian import create_gaussian
-from ..containers.jax import JaxContainer
 
 class ApproximateDistribution:
 
@@ -27,7 +27,11 @@ class ApproximateDistribution:
 
     def __init__(self, func_dict, attr_dict, save_dict):
         self._func_dict = func_dict
-        self._func_dict['phi'] = lambda params, x: params 
+
+        def phi_func(params,x):
+            return np.repeat(params[None,:], x.shape[0], axis=0)
+
+        self._func_dict['phi'] = phi_func
         self._save_dict = save_dict
         self.params = attr_dict['params']
         self.phi_shape = attr_dict['phi_shape']
