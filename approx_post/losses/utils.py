@@ -36,57 +36,30 @@ def compute_loss_del_w(approx, params, x, loss_del_phi): # loss_del_phi.shape = 
 
 def apply_cv(val, cv, num_batch, num_samples):
 
-    val_is_array = isinstance(val, (np.ndarray, jnp.DeviceArray)) 
-
-    val_vec = vectorise_cv_input(val, num_batch, num_samples, val_is_array)
-    cv_vec = vectorise_cv_input(cv, num_batch, num_samples, val_is_array)
+    vectorised_shape = (num_batch, num_samples, -1)
+    val_vec = vectorise_cv_input(val, vectorised_shape)
+    cv_vec = vectorise_cv_input(cv, vectorised_shape)
+    
     var = np.mean(np.einsum("abi,abj->abij", cv_vec, cv_vec), axis=1) # var.shape = (num_batches, num_samples, dim_cv, dim_cv)
     val_vec_delta = val_vec-np.mean(val_vec, axis=1, keepdims=True)
     cov = np.mean(np.einsum("abi,abj->abij", cv_vec, val_vec_delta), axis=1) # cov.shape = (num_batches, num_samples, dim_cv, dim_val)
     a = np.linalg.solve(var, cov) # a.shape = (num_batch, num_samples, dim_cv, dim_val)
     val_vec = np.mean(val_vec - np.einsum("aij,abi->abj", a, cv_vec), axis=1) # val_vec.shape = (num_batch, num_val)
     
-    val = val_vec.reshape([x for idx, x in enumerate(val.shape) if idx!=1]) if val_is_array else repack_arraytainer(val_vec, val.shape)
+    val = repack_cv_output(val_vec, val)
 
     return val
 
-def vectorise_cv_input(val, num_batch, num_samples, val_is_array):
-    val = Numpytainer(val) if val_is_array else val
-    flattened_arraytainer = val.reshape(num_batch, num_samples,-1)
-    arrays_to_cat = [x for x in flattened_arraytainer.list_arrays() if x.shape[-1]>0]
-    flattened = np.concatenate(arrays_to_cat, axis=2)
+def vectorise_cv_input(val, vectorised_shape):
+    flattened = val.flatten(order='F')
+    flattened = flattened.reshape(vectorised_shape, order='F')
     return flattened # flattened.shape = (num_batch, num_samples, -1)
 
-def repack_arraytainer(vectorised_vals, shapes):
-    vals = {}
-    idx = 0
-    for key, shape in shapes.items():
-        out_shape = (shape[0], shape[-1])
-        num_elem = np.prod(out_shape).item()
-        vals[key] = vectorised_vals[:,idx:idx+num_elem].reshape(out_shape)
-        idx += num_elem
-    if shapes._type is list:
-        vals = list(vals.values())
-    return Numpytainer(vals)
-
-# def vectorise_values(val):
-#     shapes = val.shape
-#     shapes = NumpyContainer(shapes)
-#     num_samples = shapes[0][0]
-#     val_vec = np.reshape(val, (num_samples,-1))
-#     val_vec = np.concatenate(val_vec.values(), axis=1)
-#     return val_vec
-
-# def reshape_output(val_vec, val):
-#     out_shapes = val.shape[1:]
-#     if issubclass(type(val), ArrayContainer):
-#         val_out = val.copy()
-#         i = 0
-#         for key, shape in out_shapes.items():
-#             num_elem = reduce(lambda x,y: x*y, shape)
-#             val_i = val_vec[i:i+num_elem]
-#             i += num_elem
-#             val_out[key] = val_i.reshape(shape)
-#     else:
-#         val_out = val_vec.reshape(out_shapes)
-#     return val_out
+def repack_cv_output(val_vec, val):
+    val_is_array = isinstance(val, (np.ndarray, jnp.DeviceArray))
+    new_shape = val.shape[0:3:2]
+    if val_is_array:
+        val = val_vec.reshape(new_shape)
+    else:
+        val = Numpytainer.from_vector(val_vec, new_shape, order='F')
+    return val

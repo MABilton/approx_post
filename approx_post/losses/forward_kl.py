@@ -70,12 +70,6 @@ def forwardkl_reparameterisation(phi, x, approx, joint, num_samples):
     loss = -1*np.mean(loss_samples, axis=1) # loss.shape = (num_batch,)
     grad = -1*np.mean(grad_samples, axis=1) # grad.shape = (num_batch, *phi.shape)
 
-    # # Apply control variates:
-    # control_variate = approx_del_2
-    # num_batch = loss_samples.shape[0]
-    # # loss = -1*apply_cv(loss_samples, control_variate, num_batch, num_samples)
-    # # grad = -1*apply_cv(grad_samples, control_variate, num_batch, num_samples)
-
     return (loss, grad)
 
 def forwardkl_controlvariates(phi, x, approx, joint, num_samples):

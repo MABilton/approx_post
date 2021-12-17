@@ -44,7 +44,7 @@ def fit_approximation(loss_and_grad, approx_dist, x, verbose=False):
         # Re-check loop condition:
         loop_flag = check_loop_cond(params, optim_params)
     
-    approx_dist.params = best_params.unpacked
+    approx_dist._attr_dict['params'] = best_params.unpacked
 
     return approx_dist
 

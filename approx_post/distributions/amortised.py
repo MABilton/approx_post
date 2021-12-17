@@ -1,23 +1,24 @@
 import jax.numpy as jnp
 import numpy as np
 from numpy.random import normal as normal_dist
+from arraytainers import Numpytainer
 
 from .approx import ApproximateDistribution
 
 class AmortisedApproximation(ApproximateDistribution):
 
     @classmethod
-    def nn(approx, x_values):
-        phi_dim = NumpyContainer(self.params).shape
-        x_dim = x_values.shape[1]
+    def nn(cls, approx, x_values):
+        phi_shapes = Numpytainer(approx.params).shape
+        phi_dim = phi_shapes.sum().sum_arrays().item()
+        x_dim = x_values.shape[-1]
         nn, wts = create_nn(x_dim, phi_dim)
         return cls(approx, nn, wts, x_values)
 
-    def __init__(approx, phi_func, params, x_values):
+    def __init__(self, approx, phi_func, params, x_values):
         func_dict = approx._func_dict
-        
         super().__init__(approx._func_dict, approx._attr_dict, approx._save_dict)
-        self.params = params
+        self._attr_dict['params'] = params
         self._func_dict['phi'] = phi_func
 
 def create_nn(x_dim, phi_dim, num_layers=5, width=10, activation='relu', output_softmax=True):
@@ -47,8 +48,10 @@ def create_nn(x_dim, phi_dim, num_layers=5, width=10, activation='relu', output_
 
     # Define function to call neural network:
     def nn(x, wts):
+        if x.ndim < 2:
+            x = x.reshape(-1, 1)
         output = x
-        for i in range(num_layers):
+        for i in range(num_layers+2):
             W, b = wts[f'W_{i}'], wts[f'b_{i}']
             output = layers[i](output, W, b)
         # Reshape output into correct phi shapes:
@@ -68,7 +71,7 @@ def create_forward_layer(in_dim, out_dim, act_fun, num_layers):
     
     # Define layer function:
     def fun(x, W, b):
-        output = jnp.einsum('ij,j->i', W, x) + b
+        output = jnp.einsum('ij,aj->ai', W, x) + b
         return act_fun(output)
     
     # Initialise weights using He-Xavier initialisation

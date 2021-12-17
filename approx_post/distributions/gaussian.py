@@ -46,9 +46,9 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
         # NB: we'll vectorise over batch dimension of phi input with vmap
         # epsilon.shape = (num_samples, ndim)
         chol = covariance_from_cholesky(phi['chol_diag'], phi['chol_lowerdiag']) # chol.shape = (ndim, ndim)
-        # Need to add singleton dimension for broadcasting purposes:
         mean = phi['mean'] # mean.shape = (ndim,)
-        # NB: Need '...' since we must vectorise function over num_samples dimension of epsilon when computing derivative of transform function:
+        # NB: Need '...' since we must vectorise function over num_samples 
+        # dimension of epsilon when computing derivative of transform function:
         theta = mean + jnp.einsum('ij,...j->...i', chol, epsilon) # theta.shape = (num_samples, ndim)
         return theta
 

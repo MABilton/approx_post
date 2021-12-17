@@ -33,10 +33,20 @@ class ApproximateDistribution:
 
         self._func_dict['phi'] = phi_func
         self._save_dict = save_dict
-        self.params = attr_dict['params']
-        self.phi_shape = attr_dict['phi_shape']
-        self.phi_lb = attr_dict['phi_lb']
-        self.phi_ub = attr_dict['phi_ub']
+        self._attr_dict = attr_dict
+
+    @property
+    def params(self):
+        return self._attr_dict['params']
+    @property
+    def phi_shape(self):
+        return self._attr_dict['phi_shape']
+    @property
+    def phi_lb(self):
+        return self._attr_dict['phi_lb']
+    @property
+    def phi_ub(self):
+        return self._attr_dict['phi_ub']
 
     def initialise_params():
         pass
