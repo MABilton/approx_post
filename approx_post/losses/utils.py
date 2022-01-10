@@ -37,17 +37,19 @@ def compute_loss_del_w(approx, params, x, loss_del_phi): # loss_del_phi.shape = 
 def apply_cv(val, cv, num_batch, num_samples):
 
     vectorised_shape = (num_batch, num_samples, -1)
-    val_vec = vectorise_cv_input(val, vectorised_shape)
-    cv_vec = vectorise_cv_input(cv, vectorised_shape)
+    # val_vec = vectorise_cv_input(val, vectorised_shape)
+    # cv_vec = vectorise_cv_input(cv, vectorised_shape)
+    val_vec = val.reshape(vectorised_shape)
+    cv_vec = cv.reshape(vectorised_shape)
     
     var = np.mean(np.einsum("abi,abj->abij", cv_vec, cv_vec), axis=1) # var.shape = (num_batches, num_samples, dim_cv, dim_cv)
     val_vec_delta = val_vec-np.mean(val_vec, axis=1, keepdims=True)
     cov = np.mean(np.einsum("abi,abj->abij", cv_vec, val_vec_delta), axis=1) # cov.shape = (num_batches, num_samples, dim_cv, dim_val)
     a = np.linalg.solve(var, cov) # a.shape = (num_batch, num_samples, dim_cv, dim_val)
     val_vec = np.mean(val_vec - np.einsum("aij,abi->abj", a, cv_vec), axis=1) # val_vec.shape = (num_batch, num_val)
+    # val = repack_cv_output(val_vec, val)
+    val = val_vec if "tainer" in str(type(val)) else val_vec.sum_arrays()
     
-    val = repack_cv_output(val_vec, val)
-
     return val
 
 def vectorise_cv_input(val, vectorised_shape):

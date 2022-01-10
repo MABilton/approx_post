@@ -4,7 +4,7 @@ from arraytainers import Jaxtainer
 
 from .utils import apply_cv, compute_loss_del_w
 
-def reverse_kl(approx, joint, use_reparameterisation=True, verbose=False, num_samples=1000):
+def reverse_kl(approx, joint, use_reparameterisation=True, verbose=False, num_samples=10):
 
     # Create wrapper around forward kl loss function:
     def loss_and_grad(params, x):
@@ -58,15 +58,13 @@ def reversekl_controlvariates(phi, x, approx, joint, num_samples):
     approx_lp = approx._func_dict["lp"](theta_samples, phi) # approx_lp.shape = (num_batch, num_samples)
     joint_lp = joint._func_dict["lp"](theta_samples, x) # joint_lp.shape = (num_batch, num_samples)
     approx_del_phi = approx._func_dict["lp_del_2"](theta_samples, phi) # approx_del_phi.shape = (num_batch, num_samples, *phi.shape)
- 
+    
     # Compute loss and gradient of loss values:
     loss_samples = (joint_lp - approx_lp) # loss_samples.shape = (num_batch, num_samples)
     grad_samples = np.einsum("ab,ab...->ab...", loss_samples, approx_del_phi) # grad_samples.shape = (num_batch, num_samples, *phi.shape)
-
     # Apply control variates:
     control_variate = approx_del_phi
     num_batch = loss_samples.shape[0]
-    loss = -1*apply_cv(loss_samples, control_variate, num_batch, num_samples) # loss.shape = (num_batch,)
+    loss = -1*apply_cv(loss_samples[:,:,None], control_variate, num_batch, num_samples) # loss.shape = (num_batch,)
     grad = -1*apply_cv(grad_samples, control_variate, num_batch, num_samples) # grad.shape = (num_batch, *phi.shape)
- 
     return (loss, grad)

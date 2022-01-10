@@ -39,13 +39,14 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
     # Sampling functions:
 
     def sample_base(num_samples):
+        np.random.seed(1)
         samples = mvn_sample(base_mean, base_cov, size=num_samples)
         return samples.reshape(num_samples, ndim)
 
     def transform(epsilon, phi): 
         # NB: we'll vectorise over batch dimension of phi input with vmap
         # epsilon.shape = (num_samples, ndim)
-        chol = covariance_from_cholesky(phi['chol_diag'], phi['chol_lowerdiag']) # chol.shape = (ndim, ndim)
+        chol = assemble_cholesky(phi['chol_diag'], phi['chol_lowerdiag']) # chol.shape = (ndim, ndim)
         mean = phi['mean'] # mean.shape = (ndim,)
         # NB: Need '...' since we must vectorise function over num_samples 
         # dimension of epsilon when computing derivative of transform function:
@@ -90,7 +91,7 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
 
     # Create attribute dictionary:
 
-    phi = {'mean': np.zeros(ndim),
+    phi = {'mean': 0.1*np.ones(ndim),
            'chol_diag': np.ones(ndim), 
            'chol_lowerdiag': np.zeros((ndim**2-ndim)//2)}
     phi_shape = {key: phi_i.shape for key, phi_i in phi.items()}
