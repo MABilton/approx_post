@@ -2,13 +2,13 @@ import numpy as np
 from math import inf
 from arraytainers import Jaxtainer
 
-from .utils import apply_cv, compute_loss_del_w
+from .utils import apply_cv, compute_loss_del_w, preprocess_params_and_x
 
-def forward_kl(approx, joint=None, provided_samples=None, use_reparameterisation=False, num_samples=1000):
+def forward_kl(approx, joint=None, provided_samples=None, use_reparameterisation=False):
     
     # Create wrapper around forward kl loss function:
-    def loss_and_grad(params, x):
-        
+    def loss_and_grad(params, x, num_samples):
+        params, x = preprocess_params_and_x(params, x)
         phi = Jaxtainer(approx._func_dict['phi'](params, x))
         # If we're given posterior samples, compute forward KL divergence directly:
         if provided_samples is not None:
@@ -63,13 +63,13 @@ def forwardkl_reparameterisation(phi, x, approx, joint, num_samples):
     # joint_del_phi.shape = (num_batch, num_samples, *phi.shape)
     approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) + approx_del_2
     # approx_del_phi.shape = (num_batch, num_samples, *phi.shape)
+    
     grad_samples = np.einsum("ab,ab...->ab...", approx_lp, joint_del_phi) + \
                    np.einsum("ab,ab...->ab...", 1-approx_lp, approx_del_phi)
     loss_samples, grad_samples = compute_importance_samples(loss_samples, grad_samples, approx_lp, joint_lp)
-
     loss = -1*np.mean(loss_samples, axis=1) # loss.shape = (num_batch,)
     grad = -1*np.mean(grad_samples, axis=1) # grad.shape = (num_batch, *phi.shape)
-
+    
     return (loss, grad)
 
 def forwardkl_controlvariates(phi, x, approx, joint, num_samples):

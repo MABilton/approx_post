@@ -4,6 +4,7 @@ import os
 import numpy as np
 
 from .gaussian import create_gaussian
+from ..optimisation.fit import fit_approximation
 
 class ApproximateDistribution:
 
@@ -47,6 +48,9 @@ class ApproximateDistribution:
     @property
     def phi_ub(self):
         return self._attr_dict['phi_ub']
+
+    def fit(self, loss_and_grad, x, num_samples=1000, verbose=False):
+        self = fit_approximation(self, loss_and_grad, x, num_samples, verbose)
 
     def initialise_params():
         pass

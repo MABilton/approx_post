@@ -2,12 +2,13 @@ import numpy as np
 from math import inf
 from arraytainers import Jaxtainer
 
-from .utils import apply_cv, compute_loss_del_w
+from .utils import apply_cv, compute_loss_del_w, preprocess_params_and_x
 
-def reverse_kl(approx, joint, use_reparameterisation=True, verbose=False, num_samples=10):
+def reverse_kl(approx, joint, use_reparameterisation=True, verbose=False):
 
     # Create wrapper around forward kl loss function:
-    def loss_and_grad(params, x):
+    def loss_and_grad(params, x, num_samples):
+        params, x = preprocess_params_and_x(params, x)
         phi = Jaxtainer(approx._func_dict['phi'](params, x))
         if use_reparameterisation:
             loss, loss_del_phi = reversekl_reparameterisation(phi, x, approx, joint, num_samples)

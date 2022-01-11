@@ -1,18 +1,13 @@
 import numpy as np
 from math import inf
 from arraytainers import Jaxtainer
+
 from .algorithms import adam, adagrad
 from .bounds import create_bounds
 
-from ..distributions.amortised import AmortisedApproximation
-
 EPS = 1e-3
 
-def fit_approximation(loss_and_grad, approx_dist, x, verbose=False):
-    
-    # Ensure x contains a 'batch' and 'num_obs' dimension:
-    for _ in range(3 - x.ndim):
-        x = x[None,:] 
+def fit_approximation(approx_dist, loss_and_grad, x, num_samples=1000, verbose=False):
 
     # Initialise optimisation parameters:
     optim_params = initialise_optim_params()
@@ -24,12 +19,12 @@ def fit_approximation(loss_and_grad, approx_dist, x, verbose=False):
     loop_flag = True
     best_loss = inf 
     params = Jaxtainer(approx_dist.params)
-    clip_output = not isinstance(approx_dist, AmortisedApproximation)
+    clip_output = not ("Amortised" in str(type(approx_dist)))
     
     while loop_flag:
         
         # Compute loss and gradient of metric:
-        loss, grad = loss_and_grad(params, x)
+        loss, grad = loss_and_grad(params, x, num_samples)
 
         # Update parameters with optimisation algorithm:
         params, optim_params = update_params(params, grad, optim_params, bounds_containers, clip_output)

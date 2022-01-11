@@ -76,9 +76,7 @@ def create_gaussian(ndim, mean_lb, mean_ub, var_ub, cov_lb, cov_ub):
     # Gradient functions - NB: must vectorise over num_samples axis of theta input when computing gradients so that we don't compute cross-derivatives between samples (e.g. we don't compute the gradient of the log-probability of the i'th sample wrt to j'th sample):
     transform_del_2 = jax.vmap(jax.vmap(jax.jacfwd(transform, argnums=1), in_axes=(0,None)), in_axes=(None,0))
     lp_del_1 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=0), in_axes=(0,None)), in_axes=(0,0))
-    # lp_del_1 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=0), in_axes=(0,0), out_axes=0), in_axes=(1,None))
     lp_del_2 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=1), in_axes=(0,None)), in_axes=(0,0))
-    # lp_del_2 = jax.vmap(jax.vmap(jax.jacfwd(lp, argnums=1), in_axes=(0,0), out_axes=0), in_axes=(1,None))
 
     # Create dictionary of functions:
     func_dict = {'lp': lp_vmap,

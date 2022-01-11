@@ -56,7 +56,7 @@ def joint_from_model(model, noise_cov, prior_mean, prior_cov, model_del_theta):
 
         def prior_del_theta(theta, prior_mean, prior_cov):
             lp_grad = mvn_del_mean(theta, prior_mean, prior_cov)
-            return lp_grad  # .reshape(-1, theta_dim) # lp_grad.shape = (num_samples, theta_dim)
+            return lp_grad 
 
         def likelihood_del_mean(x_obs, x_pred, noise_cov): 
             # x_obs.shape = (num_batch, num_obs, x_dim) 

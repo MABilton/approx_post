@@ -2,7 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 from functools import reduce
 from more_itertools.more import always_iterable
-from arraytainers import Numpytainer
+from arraytainers import Numpytainer, Jaxtainer
 
 from ..distributions.amortised import AmortisedApproximation
 
@@ -65,3 +65,11 @@ def repack_cv_output(val_vec, val):
     else:
         val = Numpytainer.from_vector(val_vec, new_shape, order='F')
     return val
+
+def preprocess_params_and_x(params, x):
+    if isinstance(params, (dict, list)):
+        params = Jaxtainer(params)
+    # Ensure x contains a 'batch' and 'num_obs' dimension:
+    for _ in range(3 - x.ndim):
+        x = x[None,:] 
+    return params, x
