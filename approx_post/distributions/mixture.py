@@ -115,6 +115,10 @@ class MixtureApproximation:
             self.components[key].update(new_phi[key])
         self._coefficients = new_phi[self._coeff_key]
 
+    @property
+    def phi_bounds(self):
+
+
 class GaussianMixture(MixtureApproximation):
 
     def __init__(self, ndim, num_components, phi=None, mean_bounds=(None,None), var_bounds=(None,None), cov_bounds=(None,None),

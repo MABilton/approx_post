@@ -47,7 +47,7 @@ class ApproximateDistribution:
 
     def _create_bounds(bounds, default_val):
 
-        # Need np.ones_like rather than jnp.ones_like since params is a Jaxtainer:
+        # Need np.ones_like rather than jnp.ones_like since _phi is a Jaxtainer:
         ones_arraytainer = np.ones_like(self._phi)
 
         if bounds is None:
@@ -167,10 +167,16 @@ class ApproximateDistribution:
         return theta.reshape(output_shape)
 
     def load(self, load_dir):
-        self.params = Jaxtainer(self._load_json(load_dir))
+        self._phi = Jaxtainer(self._load_json(load_dir))
 
     def update(self, new_phi):
-        self._phi = Jaxtainer(new_phi)
+        clipped_phi = self._clip_phi_to_bounds(new_phi)
+        self._phi = Jaxtainer(clipped_phi)
+
+    def _clip_phi_to_bounds(self, new_phi):
+        new_phi[new_phi < self.phi_bounds['lb']] = self.phi_bounds['lb']
+        new_phi[new_phi > self.phi_bounds['ub']] = self.phi_bounds['ub']
+        return new_phi
 
     @staticmethod
     def _load_json(load_dir):
@@ -184,8 +190,8 @@ class ApproximateDistribution:
                                        f'Ensure that {file_name} is in a JSON-readable format.')
         return dist_json
 
-    def save(self, save_name='params.json', save_dir='.', indent=4):
-        to_save = self._params.unpack()
+    def save(self, save_name='phi.json', save_dir='.', indent=4):
+        to_save = self._phi.unpack()
         if save_name[-4:] != 'json':
             save_name += ".json"
         with open(os.path.join(save_dir, save_name), 'w') as f:
