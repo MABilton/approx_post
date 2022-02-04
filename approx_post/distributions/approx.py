@@ -1,5 +1,6 @@
-import json
 import os
+import more_itertools
+import json
 from arraytainers import Jaxtainer
 import numpy as np
 import jax
@@ -15,12 +16,12 @@ class ApproximateDistribution:
         
         if (sample is None) and (all(None in [sample_base, transform])):
             raise ValueError('Must specify either a sample function OR both a sample_base function AND a transform function.')
-        
+
         self._phi = Jaxtainer(phi)
         self._func_dict = self._create_func_dict(logpdf, sample, sample_base, transform)
         self.phi_bounds = \
             Jaxtainer({key: self._create_bounds(phi_bounds[key], self._default_phi_bounds[key]) for key in ['lb', 'ub']})
-        self._phi = self._check_phi()
+        self._ensure_phi_inside_bounds()
 
     @staticmethod
     def _create_func_dict(logpdf, sample, sample_base, transform):
@@ -28,9 +29,9 @@ class ApproximateDistribution:
         func_dict = {}
 
         # Vectorise over batch dimensions of theta and phi, then over sample dimension of theta:
-        func_dict['logprob'] = jax.vmap(jax.vmap(logprob, in_axes=(0,None)), in_axes=(0,0))
-        func_dict['logprob_del_1'] = jax.vmap(jax.vmap(jax.jacfwd(logprob, argnums=0), in_axes=(0,None)), in_axes=(0,0))
-        func_dict['logprob_del_2'] = jax.vmap(jax.vmap(jax.jacfwd(logprob, argnums=1), in_axes=(0,None)), in_axes=(0,0))
+        func_dict['logpdf'] = jax.vmap(jax.vmap(logpdf, in_axes=(0,None)), in_axes=(0,0))
+        func_dict['logpdf_del_1'] = jax.vmap(jax.vmap(jax.jacfwd(logpdf, argnums=0), in_axes=(0,None)), in_axes=(0,0))
+        func_dict['logpdf_del_2'] = jax.vmap(jax.vmap(jax.jacfwd(logpdf, argnums=1), in_axes=(0,None)), in_axes=(0,0))
 
         # Vectorise over batch dimensions of phi:
         if sample is not None:
@@ -45,7 +46,7 @@ class ApproximateDistribution:
         
         return func_dict
 
-    def _create_bounds(bounds, default_val):
+    def _create_bounds(self, bounds, default_val):
 
         # Need np.ones_like rather than jnp.ones_like since _phi is a Jaxtainer:
         ones_arraytainer = np.ones_like(self._phi)
@@ -53,6 +54,7 @@ class ApproximateDistribution:
         if bounds is None:
             bounds = default_val*ones_arraytainer
         else:
+            bounds = self._remove_none_values_from_bounds(bounds)
             bounds = Jaxtainer(bounds)
             param_keys, bounds_keys = set(self._phi.keys()), set(bounds.keys())
             try:
@@ -69,8 +71,24 @@ class ApproximateDistribution:
             bounds = bounds*ones_arraytainer
         return bounds
 
-    def _check_phi(self):
-        phi_outside_bounds = (self.phi_bounds['lb'] > self.phi) | (self.phi_bounds['ub'] < self.phi)
+    @staticmethod
+    def _remove_none_values_from_bounds(bounds):
+        
+        bounds_iter = bounds.items() if isinstance(bounds, dict) else enumerate(bounds)
+        nonnone_bounds = {}
+        for key, val in bounds_iter:
+            if val is not None:
+                nonnone_bounds[key] = val
+            elif isinstance(val, (list, dict)):
+                nonnone_bounds[key] = ApproximateDistribution._remove_none_values_from_bounds(val)
+
+        if isinstance(bounds, list):
+            nonnone_bounds = list(nonnone_bounds.values())
+
+        return nonnone_bounds
+
+    def _ensure_phi_inside_bounds(self):
+        phi_outside_bounds = (self.phi_bounds['lb'] > self.phi()) | (self.phi_bounds['ub'] < self.phi())
         if any(phi_outside_bounds):
             raise ValueError('At least one specified phi value lies outside of the valid range of phi values.')
 
@@ -99,72 +117,57 @@ class ApproximateDistribution:
 
     def logpdf(self, theta, phi=None):
         phi = self._get_phi(phi)
-        input_ndim = theta.ndim
+        leading_dims = theta.ndim - 1
         theta = self._reshape_input(theta, ndim=3)
-        lp = self._fun_dict['logpdf'](theta, phi)
+        lp = self._func_dict['logpdf'](theta, phi)
         num_batch, num_sample = theta.shape[0:2]
         output_shape = (num_batch, num_sample)
-        return lp.reshape(output_shape[-input_ndim:])
+        return lp.reshape(output_shape[-leading_dims:])
 
     def logpdf_del_1(self, theta, phi=None):
         phi = self._get_phi(phi)
-        input_ndim = theta.ndim
+        leading_dims = theta.ndim - 1
         theta = self._reshape_input(theta, ndim=3)
-        x = self._reshape_input(x, ndim=3)
-        logpdf_del_1 = self._fun_dict['logpdf_del_1'](theta, phi)
+        logpdf_del_1 = self._func_dict['logpdf_del_1'](theta, phi)
         num_batch, num_sample, dim_theta = theta.shape
         output_shape = (num_batch, num_sample, dim_theta)
-        return logpdf_del_1.reshape(output_shape[-input_ndim:])
+        return logpdf_del_1.reshape(output_shape[-leading_dims:])
 
     def logpdf_del_2(self, theta, phi=None):
         phi = self._get_phi(phi)
-        input_ndim = theta.ndim - 1
+        leading_dims = theta.ndim - 1
         theta = self._reshape_input(theta, ndim=3)
-        x = self._reshape_input(x, ndim=2)
-        logpdf_del_2 = self._fun_dict['logpdf_del_2'](theta, phi)
+        logpdf_del_2 = self._func_dict['logpdf_del_2'](theta, phi)
         num_batch, num_sample = theta.shape[0:2]
         initial_dims = (num_batch, num_sample)
-        return logpdf_del_2.reshape(initial_dims[-input_ndim:], phi.shape[2:])
+        return logpdf_del_2.reshape(*initial_dims[-leading_dims:], phi.shape[1:])
 
-    def sample(self, num_samples, phi=None):
+    def sample(self, num_samples, prngkey, phi=None):
         phi = self._get_phi(phi)
-        x = self._reshape_input(x, ndim=3)
         if 'sample' in self._func_dict:
-            theta = self._func_dict(num_samples, phi)
+            theta = self._func_dict['sample'](num_samples, phi, prngkey)
         elif ('sample_base' in self._func_dict) and ('transform' in self._func_dict):
-            epsilon = self._func_dict['sample_base'](num_samples)
-            theta = self._fun_dict['transform'](epsilon, phi)
+            epsilon = self._func_dict['sample_base'](num_samples, prngkey)
+            theta = self._func_dict['transform'](epsilon, phi)
         return theta
 
-    def sample_base(self, num_samples):
-        epsilon = self._fun_dict['sample_base'](num_samples)
+    def sample_base(self, num_samples, prngkey):
+        epsilon = self._func_dict['sample_base'](num_samples, prngkey)
         return epsilon.reshape(num_samples, -1)
     
     def transform(self, epsilon, phi=None):
         phi = self._get_phi(phi)
         epsilon = self._reshape_input(theta, ndim=2)
-        x = self._reshape_input(x, ndim=2)  
-        theta = self._fun_dict['transform'](epsilon, phi) 
+        theta = self._func_dict['transform'](epsilon, phi) 
         num_samples, dim_theta = epsilon.shape
-        if x is not None:
-            num_batch = x.shape[0]
-            output_shape = (num_batch, num_samples, dim_theta)
-        else:
-            output_shape = (num_samples, dim_theta)
-        return theta.reshape(output_shape)
+        return theta.reshape(-1, num_samples, dim_theta)
     
     def transform_del_2(self, epsilon, phi=None):
         phi = self._get_phi(phi)
         epsilon = self._reshape_input(epsilon, ndim=2)
-        x = self._reshape_input(x, ndim=2)  
-        theta = self._fun_dict['transform'](epsilon, phi) 
+        theta = self._func_dict['transform'](epsilon, phi) 
         num_samples, dim_theta = epsilon.shape
-        if x is not None:
-            num_batch = x.shape[0]
-            output_shape = (num_batch, num_samples, phi.shape[2:])
-        else:
-            output_shape = (num_samples, phi.shape[2:])
-        return theta.reshape(output_shape)
+        return theta.reshape(-1, num_samples, dim_theta)
 
     def load(self, load_dir):
         self._phi = Jaxtainer(self._load_json(load_dir))
@@ -206,7 +209,7 @@ class Gaussian(ApproximateDistribution):
         phi_bounds = self._create_phi_bounds(ndim, mean_bounds, var_bounds, cov_bounds)
         if phi is None:
             phi = self._create_default_phi(ndim)
-        super().__init__(phi, **phi_bounds, **gaussian_funcs)
+        super().__init__(phi, phi_bounds=phi_bounds, **gaussian_funcs)
 
     @staticmethod
     def _create_gaussian_funcs(ndim, mean_bounds, var_bounds, cov_bounds):
@@ -225,7 +228,7 @@ class Gaussian(ApproximateDistribution):
             return cov
 
         def sample_base(num_samples, prngkey):
-            return mvn_sample(prngkey, mean=jnp.zeros(ndim), cov=jnp.identity(ndim), shape=num_samples)
+            return mvn_sample(key=prngkey, mean=jnp.zeros(ndim), cov=jnp.identity(ndim), shape=(num_samples,))
 
         def transform(epsilon, phi):
             chol = assemble_cholesky(phi['chol_diag'], phi['chol_lowerdiag'])
@@ -246,16 +249,20 @@ class Gaussian(ApproximateDistribution):
 
         return gaussian_funcs
 
-    @staticmethod
-    def _create_phi_bounds(ndim, mean_bounds, var_bounds, cov_bounds):
-        if var_bounds[0] < 0:
+    def _create_phi_bounds(self, ndim, mean_bounds, var_bounds, cov_bounds):
+
+        if (var_bounds[0] is None):
+            var_bounds = (self._min_var, var_bounds[1])
+
+        # Var bounds may be array, scalar, or Arraytainer - any won't work on scalars since they're non-iterable:
+        if any(more_itertools.always_iterable(var_bounds[0] < 0)):
             warnings.warn('Negative variance lower bound specified, which is non-meaningful;'
                           f'variance lower bound changed to {self._min_var}')
             var_bounds = (self._min_var, var_bounds[1])
 
-        mean_bounds = (val*jnp.ones(ndim) if val is not None else None for val in mean_bounds)
-        choldiag_bounds = (val**0.5 if val is not None else None for val in var_bounds)
-        chollowerdiag_bounds = (jnp.sign(val)*jnp.abs(val)**0.5 if val is not None else None for val in var_bounds)
+        mean_bounds = [val*jnp.ones(ndim) if val is not None else None for val in mean_bounds]
+        choldiag_bounds = [val**0.5 if val is not None else None for val in var_bounds]
+        chollowerdiag_bounds = [jnp.sign(val)*jnp.abs(val)**0.5 if val is not None else None for val in cov_bounds]
         phi_bounds = {'lb': {'mean': mean_bounds[0], 'chol_diag': choldiag_bounds[0], 'chol_lowerdiag': chollowerdiag_bounds[0]},
                       'ub': {'mean': mean_bounds[1], 'chol_diag': choldiag_bounds[1], 'chol_lowerdiag': chollowerdiag_bounds[1]}}
 

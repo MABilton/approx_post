@@ -11,11 +11,11 @@ class JointDistribution:
 
     def logpdf(self, theta, x):
         num_batch, num_samples = theta.shape[0:2]
-        return self.fun_dict['logpdf'](theta, x).reshape(num_batch, num_samples)
+        return self._func_dict['logpdf'](theta, x).reshape(num_batch, num_samples)
     
     def logpdf_del_1(self, theta, x):
         num_batch, num_samples = theta.shape[0:2]
-        return self.fun_dict['logpdf_del_1'](theta, x).reshape(num_batch, num_samples, -1)
+        return self._func_dict['logpdf_del_1'](theta, x).reshape(num_batch, num_samples, -1)
 
 class ModelPlusGaussian(JointDistribution):
     
@@ -36,15 +36,15 @@ class ModelPlusGaussian(JointDistribution):
 
     def _create_model_funcs(self):
 
-        def wrapped_model(theta, x):
-            output = jnp.array(self.model(theta, x))
-            num_batch = theta.shape[0]
-            return output.reshape(num_batch, self.x_dim)
+        def wrapped_model(theta):
+            output = jnp.array(self.model(theta))
+            num_batch, num_samples = theta.shape[0:2]
+            return output.reshape(num_batch, num_samples, self.x_dim)
         
-        def wrapped_model_grad(theta, x):
-            output = jnp.array(self.model_grad(theta, x))
-            num_batch = theta.shape[0]
-            return output.reshape(num_batch, self.x_dim, self.theta_dim)
+        def wrapped_model_grad(theta):
+            output = jnp.array(self.model_grad(theta))
+            num_batch, num_samples = theta.shape[0:2]
+            return output.reshape(num_batch, num_samples, self.x_dim, self.theta_dim)
 
         return {'model': wrapped_model, 'model_grad': wrapped_model_grad}
 

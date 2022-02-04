@@ -22,7 +22,8 @@ class AmortisedApproximation:
     def phi(self, x):
         for _ in range(2-x.ndim):
             x = x[None,:]
-        return self._phi_func(x, self.params)
+        phi = self._phi_func(x, self.params)
+        return self._constraint(phi)
     
     def phi_del_params(self, x):
         for _ in range(2-x.ndim):
@@ -88,14 +89,14 @@ class NeuralNetwork(AmortisedApproximation):
     _activations = {'relu': jnn.relu, 'softmax': jnn.softmax}
     _initializers = {'W': jnn.initializers.he_normal(), 'b': jnn.initializers.zeros}
 
-    def __init__(self, distribution, x_dim, num_layers=5, width=10, activation='relu'):
+    def __init__(self, distribution, x_dim, prngkey, num_layers=5, width=10, activation='relu'):
         
         try:
             assert activation.lower() in self._activations
         except AssertionError, AttributeError:
             raise ValueError(f"Invalid value specified for activation; valid options are: {", ".join(self._activations.keys())}")
 
-        nn_layers, wts = self._create_nn_layers(distribution, x_dim, num_layers, width, activation)
+        nn_layers, wts = self._create_nn_layers(distribution, x_dim, num_layers, width, activation, prngkey)
         nn = self._create_nn_func(nn_layers, num_layers)
         super().__init__(distribution, phi_func=nn, params=wts)
 
