@@ -30,6 +30,11 @@ class Loss:
 
         return loss_del_params
 
+    @staticmethod
+    def _avg_over_batch_dim(loss, loss_del_phi):
+        # Use np.mean on loss_del_phi since it's an arraytainer:
+        return jnp.mean(loss, axis=0), np.mean(loss_del_phi, axis=0)
+
     def _apply_controlvariates(self, val, cv):
 
         num_batch, num_samples = self._get_batch_and_sample_size_from_cv(cv)
@@ -76,19 +81,19 @@ class Loss:
         return output
 
     def _compute_joint_del_phi_reparameterisation(self, x, theta, transform_del_phi):
-        joint_del_1 = self.joint.logprob_del_1(theta, x)
+        joint_del_1 = self.joint.logpdf_del_1(theta, x)
         return np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) 
     
     @staticmethod
-    def _compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi, approx_is_mixture=False):
+    def _compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi, approx_is_mixture=False):    
         if approx_is_mixture:
-            approx_del_1 = approx.logprob_del_1(theta, phi) # shape = (num_batch, num_samples, theta_dim)
-            approx_del_2 = approx.logprob_del_2(theta, phi) # shape = (num_batch, num_samples, *phi.shape)
-            approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) + approx_del_2
-        else:
-            approx_del_1 = approx.logprob_del_1_components(theta, phi) # shape = (num_batch, num_samples, theta_dim)
-            approx_del_2 = approx.logprob_del_2_components(theta, phi) # shape = (num_batch, num_samples, *phi.shape)
+            approx_del_1 = approx.logpdf_del_1_components(theta, phi) # shape = (num_batch, num_samples, theta_dim)
+            approx_del_2 = approx.logpdf_del_2_components(theta, phi) # shape = (num_batch, num_samples, *phi.shape)
             approx_del_phi = np.einsum("mabj,mabj...->mab...", approx_del_1, transform_del_phi) + approx_del_2
+        else:
+            approx_del_1 = approx.logpdf_del_1(theta, phi) # shape = (num_batch, num_samples, theta_dim)
+            approx_del_2 = approx.logpdf_del_2(theta, phi) # shape = (num_batch, num_samples, *phi.shape)
+            approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) + approx_del_2
         return approx_del_phi
 
 class ReverseKL(Loss):
@@ -119,7 +124,9 @@ class ReverseKL(Loss):
         else:
             raise ValueError("Invalid method attribute value: must be either 'elbo' or 'selbo'.")
         
-        loss_del_params = self._eval_loss_del_params(loss_del_phi, x, approx)
+        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, approx)
+
+        loss, loss_del_params = self._avg_over_batch_dim(loss, loss_del_params)
 
         return loss, loss_del_params
 
@@ -131,15 +138,14 @@ class ReverseKL(Loss):
         epsilon = approx.sample_base(num_samples, prngkey)
         theta = approx.transform(epsilon, phi)
 
-        approx_lp = approx.logprob(theta, phi)
-        joint_lp = self.joint.logprob(theta, x)
+        approx_lp = approx.logpdf(theta, phi)
+        joint_lp = self.joint.logpdf(theta, x)
         loss_samples = joint_lp - approx_lp
 
         transform_del_phi = approx.transform_del_2(epsilon, phi)
-        joint_del_phi = self._compute_joint_del_phi(x, theta, transform_del_phi)
-        approx_del_phi = self._compute_approx_del_phi(approx, phi, theta, transform_del_phi)
-        loss_del_phi_samples = np.einsum("abi,abi...->ab...", joint_del_theta, transform_del_phi) \
-                             - np.einsum("abi,abi...->ab...", approx_del_phi, transform_del_phi)
+        joint_del_phi = self._compute_joint_del_phi_reparameterisation(x, theta, transform_del_phi)
+        approx_del_phi = self._compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi)
+        loss_del_phi_samples = joint_del_phi - approx_del_phi
         
         loss = -1*np.mean(loss_samples, axis=1)
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1)
@@ -177,8 +183,8 @@ class ReverseKL(Loss):
         epsilon = approx.sample_base(num_samples, prngkey)
         theta = approx.transform(epsilon, phi)
     
-        approx_lp = approx.logprob(theta, phi)
-        joint_lp = self.joint.logprob(theta, x)
+        approx_lp = approx.logpdf(theta, phi)
+        joint_lp = self.joint.logpdf(theta, x)
         loss_samples = joint_lp - approx_lp
 
         transform_del_phi = approx.transform_del_2(epsilon, phi)
@@ -212,8 +218,8 @@ class ForwardKL(Loss):
         self.use_reparameterisation = use_reparameterisation
 
     @staticmethod
-    def _compute_importance_samples(samples, approx_logprob, joint_logprob):
-        log_wts = joint_logprob - approx_logprob
+    def _compute_importance_samples(samples, approx_logpdf, joint_logpdf):
+        log_wts = joint_logpdf - approx_logpdf
         log_wts_max = np.max(log_wts, axis=1).reshape(-1,1)
         unnorm_wts = np.exp(log_wts-log_wts_max)
         return unnorm_wts*samples/np.sum(unnorm_wts, axis=1).reshape(-1,1)
@@ -237,14 +243,16 @@ class ForwardKL(Loss):
             else:
                 loss, loss_del_phi = self._eval_controlvariates(approx, phi, x, num_samples, prngkey)
             
-        loss_del_params = self._eval_loss_del_params(loss_del_phi, x, approx)
+        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, approx)
+
+        loss, loss_del_params = self._avg_over_batch_dim(loss, loss_del_params)
 
         return loss, loss_del_params
 
     def _eval_posterior_samples(self, approxdist, phi):
-        approx_lp = approx.logprob(self.posterior_samples, phi=phi)
+        approx_lp = approx.logpdf(self.posterior_samples, phi=phi)
         loss = -1*jnp.mean(approx_lp, axis=1)
-        approx_del_phi = approx.logprob_del_2(self.posterior_samples, phi=phi)
+        approx_del_phi = approx.logpdf_del_2(self.posterior_samples, phi=phi)
         grad = -1*np.mean(approx_del_phi, axis=1)
         return loss, grad
 
@@ -256,7 +264,7 @@ class ForwardKL(Loss):
         epsilon = approx.sample_base(num_samples, prngkey)
         theta = approx.transform(epsilon, phi)
 
-        approx_lp = approx.logprob(theta, phi) # shape = (num_batch, num_samples)
+        approx_lp = approx.logpdf(theta, phi) # shape = (num_batch, num_samples)
         loss_samples = approx_lp
         
         transform_del_phi = approx.transform_del_2(epsilon, phi)
@@ -265,7 +273,7 @@ class ForwardKL(Loss):
         loss_del_phi_samples = np.einsum("ab,ab...->ab...", approx_lp, joint_del_phi) + \
                                np.einsum("ab,ab...->ab...", 1-approx_lp, approx_del_phi)
 
-        joint_lp = self.joint.logprob(theta, x) # shape = (num_batch, num_samples)
+        joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)
         loss_samples = self._compute_importance_samples(loss_samples, approx_lp, joint_lp)
         loss_del_phi_samples = self._compute_importance_samples(loss_del_phi_samples, approx_lp, joint_lp)
         
@@ -281,11 +289,11 @@ class ForwardKL(Loss):
 
         theta = approx.sample(num_samples, prngkey, phi) # shape = (num_batch, num_samples, theta_dim)
 
-        approx_lp = approx.logprob(theta, phi)  # shape = (num_batch, num_samples)
+        approx_lp = approx.logpdf(theta, phi)  # shape = (num_batch, num_samples)
         approx_del_phi_samples = approx.lp_del_2(theta, phi)
 
         loss_samples = approx_lp
-        joint_lp = joint.logprob(theta, x)
+        joint_lp = joint.logpdf(theta, x)
         loss_samples = self._compute_importance_samples(loss_samples, approx_lp, joint_lp)
         loss_del_phi_samples = self._compute_importance_samples(loss_del_phi_samples, approx_lp, joint_lp)
 

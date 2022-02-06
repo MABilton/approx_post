@@ -88,8 +88,8 @@ class ApproximateDistribution:
         return nonnone_bounds
 
     def _ensure_phi_inside_bounds(self):
-        phi_outside_bounds = (self.phi_bounds['lb'] > self.phi()) | (self.phi_bounds['ub'] < self.phi())
-        if any(phi_outside_bounds):
+        phi_outside_bounds = (self.phi() < self.phi_bounds['lb']) | (self.phi() > self.phi_bounds['ub'])
+        if phi_outside_bounds.any():
             raise ValueError('At least one specified phi value lies outside of the valid range of phi values.')
 
     def initialise_phi(self, prngkey, mask=None):
@@ -101,7 +101,11 @@ class ApproximateDistribution:
             self._phi = new_phi
 
     def phi(self, x=None):
-        return self._phi[None,:]
+        phi = self._phi[None,:]
+        # Match batch dimension of x if provided:
+        if x is not None:
+            phi = np.repeat(phi, repeats=x.shape[0], axis=0)
+        return phi
 
     def _get_phi(self, phi):
         if phi is None:
@@ -111,6 +115,7 @@ class ApproximateDistribution:
     @staticmethod
     def _reshape_input(val, ndim):
         if val is not None:
+            val = jnp.atleast_1d(val)
             for _ in range(ndim - val.ndim):
                 val = val[None,:]
         return val
@@ -130,8 +135,8 @@ class ApproximateDistribution:
         theta = self._reshape_input(theta, ndim=3)
         logpdf_del_1 = self._func_dict['logpdf_del_1'](theta, phi)
         num_batch, num_sample, dim_theta = theta.shape
-        output_shape = (num_batch, num_sample, dim_theta)
-        return logpdf_del_1.reshape(output_shape[-leading_dims:])
+        output_shape = (num_batch, num_sample)
+        return logpdf_del_1.reshape(*output_shape[-leading_dims:], dim_theta)
 
     def logpdf_del_2(self, theta, phi=None):
         phi = self._get_phi(phi)
@@ -157,7 +162,7 @@ class ApproximateDistribution:
     
     def transform(self, epsilon, phi=None):
         phi = self._get_phi(phi)
-        epsilon = self._reshape_input(theta, ndim=2)
+        epsilon = self._reshape_input(epsilon, ndim=2)
         theta = self._func_dict['transform'](epsilon, phi) 
         num_samples, dim_theta = epsilon.shape
         return theta.reshape(-1, num_samples, dim_theta)
@@ -165,9 +170,9 @@ class ApproximateDistribution:
     def transform_del_2(self, epsilon, phi=None):
         phi = self._get_phi(phi)
         epsilon = self._reshape_input(epsilon, ndim=2)
-        theta = self._func_dict['transform'](epsilon, phi) 
+        theta_del_phi = self._func_dict['transform_del_2'](epsilon, phi) 
         num_samples, dim_theta = epsilon.shape
-        return theta.reshape(-1, num_samples, dim_theta)
+        return theta_del_phi.reshape(-1, num_samples, dim_theta, phi.shape[1:])
 
     def load(self, load_dir):
         self._phi = Jaxtainer(self._load_json(load_dir))
@@ -177,8 +182,8 @@ class ApproximateDistribution:
         self._phi = Jaxtainer(clipped_phi)
 
     def _clip_phi_to_bounds(self, new_phi):
-        new_phi[new_phi < self.phi_bounds['lb']] = self.phi_bounds['lb']
-        new_phi[new_phi > self.phi_bounds['ub']] = self.phi_bounds['ub']
+        new_phi[new_phi < self.phi_bounds['lb']] = self.phi_bounds['lb'][new_phi < self.phi_bounds['lb']]
+        new_phi[new_phi > self.phi_bounds['ub']] = self.phi_bounds['ub'][new_phi > self.phi_bounds['ub']]
         return new_phi
 
     @staticmethod
@@ -214,14 +219,15 @@ class Gaussian(ApproximateDistribution):
     @staticmethod
     def _create_gaussian_funcs(ndim, mean_bounds, var_bounds, cov_bounds):
 
-        def assemble_cholesky(chol_diag, chol_lowerdiag): 
-            L = jnp.diag(chol_diag)
-            lower_diag_idx = jnp.tril_indices(ndim, k=-1) 
-            L = jax.ops.index_update(L, lower_diag_idx, chol_lowerdiag)
+        def assemble_cholesky(phi): 
+            L = jnp.diag(phi['chol_diag'])
+            if 'chol_lowerdiag' in phi:
+                lower_diag_idx = jnp.tril_indices(ndim, k=-1) 
+                L = jax.ops.index_update(L, lower_diag_idx, phi['chol_lowerdiag'])
             return L 
 
-        def assemble_covariance(chol_diag, chol_lowerdiag):
-            L = assemble_cholesky(chol_diag, chol_lowerdiag)
+        def assemble_covariance(phi):
+            L = assemble_cholesky(phi)
             cov = L @ L.T
             # Ensure covariance matrix is symmetric:
             cov = 0.5*(cov + cov.T)
@@ -231,7 +237,7 @@ class Gaussian(ApproximateDistribution):
             return mvn_sample(key=prngkey, mean=jnp.zeros(ndim), cov=jnp.identity(ndim), shape=(num_samples,))
 
         def transform(epsilon, phi):
-            chol = assemble_cholesky(phi['chol_diag'], phi['chol_lowerdiag'])
+            chol = assemble_cholesky(phi)
             return phi['mean'] + jnp.einsum('ij,...j->...i', chol, epsilon)
 
         def sample(num_samples, phi, prngkey):
@@ -239,7 +245,7 @@ class Gaussian(ApproximateDistribution):
             return transform(epsilon, phi)
 
         def logpdf(theta, phi):
-            cov = assemble_covariance(phi['chol_diag'], phi['chol_lowerdiag'])
+            cov = assemble_covariance(phi)
             return  mvn_logpdf.logpdf(theta, mean=phi['mean'], cov=cov)
 
         gaussian_funcs = {'logpdf': logpdf, 
@@ -262,14 +268,20 @@ class Gaussian(ApproximateDistribution):
 
         mean_bounds = [val*jnp.ones(ndim) if val is not None else None for val in mean_bounds]
         choldiag_bounds = [val**0.5 if val is not None else None for val in var_bounds]
-        chollowerdiag_bounds = [jnp.sign(val)*jnp.abs(val)**0.5 if val is not None else None for val in cov_bounds]
-        phi_bounds = {'lb': {'mean': mean_bounds[0], 'chol_diag': choldiag_bounds[0], 'chol_lowerdiag': chollowerdiag_bounds[0]},
-                      'ub': {'mean': mean_bounds[1], 'chol_diag': choldiag_bounds[1], 'chol_lowerdiag': chollowerdiag_bounds[1]}}
+        phi_bounds = {'lb': {'mean': mean_bounds[0], 'chol_diag': choldiag_bounds[0]},
+                      'ub': {'mean': mean_bounds[1], 'chol_diag': choldiag_bounds[1]}}
+        
+        if ndim > 1:
+            chollowerdiag_bounds = [jnp.sign(val)*jnp.abs(val)**0.5 if val is not None else None for val in cov_bounds]
+            phi_bounds['lb']['chol_lowerdiag'] = chollowerdiag_bounds[0]
+            phi_bounds['ub']['chol_lowerdiag'] = chollowerdiag_bounds[1]
 
         return phi_bounds
 
     @staticmethod
     def _create_default_phi(ndim):
-        return {'mean': jnp.zeros(ndim),
-                'chol_diag': jnp.ones(ndim),
-                'chol_lowerdiag': jnp.zeros(ndim*(ndim-1)//2)}
+        default_phi = {'mean': jnp.zeros(ndim), 
+                       'chol_diag': jnp.ones(ndim)}
+        if ndim > 1:
+            default_phi['chol_lowerdiag'] = jnp.zeros(ndim*(ndim-1)//2)
+        return default_phi

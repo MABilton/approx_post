@@ -50,29 +50,39 @@ class ModelPlusGaussian(JointDistribution):
 
     def _create_logpdf(self):
         
+        # Vectorisng over sample dimension of mean allows for correct broadcasting:
         mvn_vmap_mean = jax.vmap(mvn.logpdf, in_axes=(None,1,None), out_axes=1)
 
         def logpdf(theta, x):
+            # theta.shape = (num_batch, num_samples, theta_dim)
+            # x.shape = (num_batch, x_dim)
             prior_logpdf = mvn.logpdf(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples)
             x_pred = self._model_funcs['model'](theta) # shape = (num_batch, num_samples, x_dim)
-            like_logpdf = mvn_vmap_mean(x, x_pred, self.noise_cov) # shape = (num_batch, num_samples, num_obs)
-            return prior_logpdf + jnp.sum(like_logpdf, axis=-1) # shape = (num_batch, num_samples)
+            like_logpdf = mvn_vmap_mean(x, x_pred, self.noise_cov) # shape = (num_batch, num_samples)
+            return prior_logpdf + like_logpdf # shape = (num_batch, num_samples)
         
         return logpdf
     
     def _create_logpdf_del_1(self):
         
+
+        # Vectorise gradients over sample and batch dimension to avoid computing cross-gradients:
+        mvn_del_theta_vmap = jax.jacfwd(mvn.logpdf, argnums=0)
+        for _ in range(2):
+            mvn_del_theta_vmap = jax.vmap(mvn_del_theta_vmap, in_axes=(0,None,None))
+
         mvn_del_mean = jax.jacfwd(mvn.logpdf, argnums=1)
-        # Vectorise over batch dimension of theta and mean, and over the sample dimension of the mean:
         mvn_del_mean_vmap = jax.vmap(jax.vmap(mvn_del_mean, in_axes=(None,0,None)), in_axes=(0,0,None))
 
         def logpdf_del_1(theta, x):
-            prior_del_1 = mvn_del_mean(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples, theta_dim)
+            # theta.shape = (num_batch, num_samples, theta_dim)
+            # x.shape = (num_batch, x_dim)
+            prior_del_1 = mvn_del_theta_vmap(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples, theta_dim)
             x_pred = self._model_funcs['model'](theta) # shape = (num_batch, num_samples, x_dim)
-            like_del_mean = mvn_del_mean_vmap(x, x_pred, self.noise_cov) # shape = (num_batch, num_samples, num_obs)
-            mean_del_1 = self._model_funcs['model_grad'](theta) # shape = (num_batch, num_samples, x_dim, theta_dim)
-            like_del_1 = jnp.einsum('abji,abj->abi', mean_del_1, like_del_mean) # shape = (num_batch, num_samples, theta_dim)
-            return prior_grad + like_grad
+            like_del_mean = mvn_del_mean_vmap(x, x_pred, self.noise_cov) # shape = (num_batch, num_samples, theta_dim)
+            mean_del_theta = self._model_funcs['model_grad'](theta) # shape = (num_batch, num_samples, x_dim, theta_dim)
+            like_del_1 = jnp.einsum('abji,abj->abi', mean_del_theta, like_del_mean) # shape = (num_batch, num_samples, theta_dim)
+            return prior_del_1 + like_del_1
 
         return logpdf_del_1
 

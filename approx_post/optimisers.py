@@ -5,22 +5,24 @@ from math import inf
 
 class Optimiser:
 
-    def fit(self, approx, loss, x, prngkey, num_samples=None, verbose=False, max_iter=100):
+    def fit(self, approx, loss_func, x, prngkey, num_samples=None, verbose=False, max_iter=100):
         
         self._initialise_loop_vars()
+        self._initialise_optim_params()
 
         params = self._get_params(approx)
 
         while self._loop_flag:
 
-            loss, loss_del_params = loss.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
+            loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
 
             new_params = params - self.step(loss_del_params)
+
             # Update method will clip params to bounds if necessary:
             approx.update(new_params)
 
             if verbose:
-                self._print_iter(loss)
+                self._print_iter(loss, new_params)
 
             if loss < self._best_loss:
                 self._best_loss = loss
@@ -44,8 +46,8 @@ class Optimiser:
 
         return params
 
-    def _print_iter(self, num_iter):
-        pass
+    def _print_iter(self, loss, new_params):
+        print(f'Loss = {loss}, Params = {new_params}')
 
     def _check_loop_condition(self, max_iter):
         if self.num_iter >= max_iter:
@@ -64,25 +66,25 @@ class Adam(Optimiser):
         m_t = self._compute_exp_avg(new_val=grad, current_avg=self._m_tm1, wt=self.beta_1)
         v_t = self._compute_exp_avg(new_val=grad**2, current_avg=self._v_tm1, wt=self.beta_2)
 
-        update = self.lr*m_t/(v_t**0.5 + eps)
+        update = self.lr*m_t/(v_t**0.5 + self.eps)
 
         self._update_optim_params(m_t, v_t)
 
         return update
 
     def _initialise_optim_params(self):
-        self.m_tm1 = 0
-        self.v_tm1 = 0
-        self.num_iter = 0
+        self._m_tm1 = 0
+        self._v_tm1 = 0
+        self.num_iter = 1
 
     def _compute_exp_avg(self, new_val, current_avg, wt):
-        new_avg = (1-wt)*current_avg + wt*new_val
+        new_avg = wt*current_avg + (1-wt)*new_val
         return self._apply_bias_correction(new_avg, wt)
 
     def _apply_bias_correction(self, new_avg, wt):
         return new_avg/(1-wt**self.num_iter)
 
-    def _update_optim_params(self):
+    def _update_optim_params(self, m_t, v_t):
         self.m_tm1 = m_t
         self.v_tm1 = v_t
         self.num_iter += 1
