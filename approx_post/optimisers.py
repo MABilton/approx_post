@@ -10,13 +10,11 @@ class Optimiser:
         self._initialise_loop_vars()
         self._initialise_optim_params()
 
-        params = self._get_params(approx)
-
         while self._loop_flag:
 
             loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
 
-            new_params = params - self.step(loss_del_params)
+            new_params = self._get_params(approx) - self.step(loss_del_params)
 
             # Update method will clip params to bounds if necessary:
             approx.update(new_params)
@@ -50,7 +48,7 @@ class Optimiser:
         print(f'Loss = {loss}, Params = {new_params}')
 
     def _check_loop_condition(self, max_iter):
-        if self.num_iter >= max_iter:
+        if self._num_iter >= max_iter:
             self._loop_flag = False
 
 class Adam(Optimiser):
@@ -66,7 +64,10 @@ class Adam(Optimiser):
         m_t = self._compute_exp_avg(new_val=grad, current_avg=self._m_tm1, wt=self.beta_1)
         v_t = self._compute_exp_avg(new_val=grad**2, current_avg=self._v_tm1, wt=self.beta_2)
 
-        update = self.lr*m_t/(v_t**0.5 + self.eps)
+        m_t_tilde = self._apply_bias_correction(m_t, wt=self.beta_1)
+        v_t_tilde = self._apply_bias_correction(v_t, wt=self.beta_2)
+
+        update = self.lr*m_t_tilde/(v_t_tilde**0.5 + self.eps)
 
         self._update_optim_params(m_t, v_t)
 
@@ -75,19 +76,18 @@ class Adam(Optimiser):
     def _initialise_optim_params(self):
         self._m_tm1 = 0
         self._v_tm1 = 0
-        self.num_iter = 1
+        self._num_iter = 1
 
     def _compute_exp_avg(self, new_val, current_avg, wt):
-        new_avg = wt*current_avg + (1-wt)*new_val
-        return self._apply_bias_correction(new_avg, wt)
+        return wt*current_avg + (1-wt)*new_val 
 
     def _apply_bias_correction(self, new_avg, wt):
-        return new_avg/(1-wt**self.num_iter)
+        return new_avg/(1-wt**self._num_iter)
 
     def _update_optim_params(self, m_t, v_t):
-        self.m_tm1 = m_t
-        self.v_tm1 = v_t
-        self.num_iter += 1
+        self._m_tm1 = m_t
+        self._v_tm1 = v_t
+        self._num_iter += 1
 
 class AdaGrad(Optimiser):
 
@@ -103,8 +103,8 @@ class AdaGrad(Optimiser):
 
     def _initialise_optim_params(self):
         self._s = 0
-        self.num_iter = 0
+        self._num_iter = 0
 
     def _update_optim_params(self, s):
         self._s += s
-        self.num_iter += 1
+        self._num_iter += 1

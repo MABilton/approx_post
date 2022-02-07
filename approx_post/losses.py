@@ -88,12 +88,10 @@ class Loss:
     def _compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi, approx_is_mixture=False):    
         if approx_is_mixture:
             approx_del_1 = approx.logpdf_del_1_components(theta, phi) # shape = (num_batch, num_samples, theta_dim)
-            approx_del_2 = approx.logpdf_del_2_components(theta, phi) # shape = (num_batch, num_samples, *phi.shape)
-            approx_del_phi = np.einsum("mabj,mabj...->mab...", approx_del_1, transform_del_phi) + approx_del_2
+            approx_del_phi = np.einsum("mabj,mabj...->mab...", approx_del_1, transform_del_phi)
         else:
             approx_del_1 = approx.logpdf_del_1(theta, phi) # shape = (num_batch, num_samples, theta_dim)
-            approx_del_2 = approx.logpdf_del_2(theta, phi) # shape = (num_batch, num_samples, *phi.shape)
-            approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) + approx_del_2
+            approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi)
         return approx_del_phi
 
 class ReverseKL(Loss):
@@ -135,7 +133,8 @@ class ReverseKL(Loss):
         if num_samples is None:
             num_samples = self._default_num_samples['elbo_reparam']
 
-        epsilon = approx.sample_base(num_samples, prngkey)
+        # epsilon = approx.sample_base(num_samples, prngkey)
+        epsilon = jnp.array([[ 0.88389311], [ 0.19586502], [ 0.35753652], [-2.34326191], [-1.08483259]])
         theta = approx.transform(epsilon, phi)
 
         approx_lp = approx.logpdf(theta, phi)
@@ -146,7 +145,7 @@ class ReverseKL(Loss):
         joint_del_phi = self._compute_joint_del_phi_reparameterisation(x, theta, transform_del_phi)
         approx_del_phi = self._compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi)
         loss_del_phi_samples = joint_del_phi - approx_del_phi
-        
+    
         loss = -1*np.mean(loss_samples, axis=1)
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1)
     
@@ -157,7 +156,8 @@ class ReverseKL(Loss):
         if num_samples is None:
             num_samples = self._default_num_samples['elbo_cv']
 
-        theta = approx.sample(num_samples, prngkey, phi) # shape = (num_batch, num_samples, theta_dim)
+        # theta = approx.sample(num_samples, prngkey, phi) # shape = (num_batch, num_samples, theta_dim)
+        theta = jnp.array([[[ 0.65167934], [-1.41240493], [-0.92739045], [-9.02978572], [-5.25449776]]])
 
         approx_lp = approx.logpdf(theta, phi) # shape = (num_batch, num_samples)
         joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)

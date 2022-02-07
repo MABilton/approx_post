@@ -238,11 +238,13 @@ class Gaussian(ApproximateDistribution):
 
         def transform(epsilon, phi):
             chol = assemble_cholesky(phi)
-            return phi['mean'] + jnp.einsum('ij,...j->...i', chol, epsilon)
+            return phi['mean'] + jnp.einsum('ij,j->i', chol, epsilon)
+
+        transform_vmap = jax.vmap(transform, in_axes=(0,None))
 
         def sample(num_samples, phi, prngkey):
             epsilon = sample_base(num_samples, prngkey)
-            return transform(epsilon, phi)
+            return transform_vmap(epsilon, phi)
 
         def logpdf(theta, phi):
             cov = assemble_covariance(phi)

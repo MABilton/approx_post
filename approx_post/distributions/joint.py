@@ -11,7 +11,8 @@ class JointDistribution:
 
     def logpdf(self, theta, x):
         num_batch, num_samples = theta.shape[0:2]
-        return self._func_dict['logpdf'](theta, x).reshape(num_batch, num_samples)
+        result = self._func_dict['logpdf'](theta, x)
+        return result.reshape(num_batch, num_samples)
     
     def logpdf_del_1(self, theta, x):
         num_batch, num_samples = theta.shape[0:2]
@@ -65,7 +66,6 @@ class ModelPlusGaussian(JointDistribution):
     
     def _create_logpdf_del_1(self):
         
-
         # Vectorise gradients over sample and batch dimension to avoid computing cross-gradients:
         mvn_del_theta_vmap = jax.jacfwd(mvn.logpdf, argnums=0)
         for _ in range(2):
