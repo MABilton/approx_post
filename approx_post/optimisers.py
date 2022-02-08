@@ -14,7 +14,8 @@ class Optimiser:
 
             loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
 
-            new_params = self._get_params(approx) - self.step(loss_del_params)
+            step = self.step(loss_del_params)
+            new_params = self._get_params(approx) - step
 
             # Update method will clip params to bounds if necessary:
             approx.update(new_params)

@@ -33,7 +33,7 @@ class Loss:
     @staticmethod
     def _avg_over_batch_dim(loss, loss_del_phi):
         # Use np.mean on loss_del_phi since it's an arraytainer:
-        return jnp.mean(loss, axis=0), np.mean(loss_del_phi, axis=0)
+        return np.mean(loss, axis=0), np.mean(loss_del_phi, axis=0)
 
     def _apply_controlvariates(self, val, cv):
 
@@ -44,10 +44,10 @@ class Loss:
         
         var = self._compute_covariance(val_1=cv_vec, val_2=cv_vec) # shape = (num_batches, num_samples, dim_cv, dim_cv)
         cov = self._compute_covariance(val_1=cv_vec, val_2=val_vec, subtract_mean_from_val_2=True) # shape = (num_batches, num_samples, dim_cv, dim_val)
-        
+
         cv_samples = self._compute_controlvariate_samples(val_vec, cv_vec, cov, var)
-        
-        val = self._unvectorise_controlvariate_output(cv_samples, val)
+
+        val = self._reshape_controlvariate_output(cv_samples, val)
 
         return val
     
@@ -59,25 +59,28 @@ class Loss:
 
     @staticmethod
     def _vectorise_controlvariate_input(val, new_shape):
+        # Need order = 'F' here for correct ordering of axes; 
+        # Note that flatten method shapes arraytainer into a single 1D array
         return val.flatten(order='F').reshape(new_shape, order='F')
 
     @staticmethod
     def _compute_covariance(val_1, val_2, subtract_mean_from_val_2=False):
         if subtract_mean_from_val_2:
-            val_2 = val_2-np.mean(val_2, axis=1, keepdims=True)
+            val_2 = val_2 - np.mean(val_2, axis=1, keepdims=True)
         return np.mean(np.einsum("abi,abj->abij", val_1, val_2), axis=1)
     
     @staticmethod
     def _compute_controlvariate_samples(val_vec, cv_vec, cov, var):
-        a = np.linalg.solve(var, cov) # shape = (num_batch, num_samples, dim_cv, dim_val)
-        return val_vec - np.einsum("aij,abi->abj", a, cv_vec) # shape = (num_batch, num_samples, num_val)
+        a = -1*np.linalg.solve(var, cov) # shape = (num_batch, num_samples, dim_cv, dim_val)
+        return val_vec + np.einsum("aij,abi->abj", a, cv_vec) # shape = (num_batch, num_samples, num_val)
 
     @staticmethod
-    def _unvectorise_controlvariate_output(cv_samples, val):
+    def _reshape_controlvariate_output(cv_samples, val):
+        # order='F' since val flattened this way in _vectorise_controlvariate_input:
         if isinstance(val, Jaxtainer):
-            output = Jaxtainer.from_array(cv_samples, val.shape)
+            output = Jaxtainer.from_array(cv_samples, val.shape, order='F')
         else:
-            output = cv_samples.reshape(val.shape)
+            output = cv_samples.reshape(val.shape, order='F')
         return output
 
     def _compute_joint_del_phi_reparameterisation(self, x, theta, transform_del_phi):
@@ -217,10 +220,17 @@ class ForwardKL(Loss):
 
     @staticmethod
     def _compute_importance_samples(samples, approx_logpdf, joint_logpdf):
-        log_wts = joint_logpdf - approx_logpdf
-        log_wts_max = np.max(log_wts, axis=1).reshape(-1,1)
-        unnorm_wts = np.exp(log_wts-log_wts_max)
-        return unnorm_wts*samples/np.sum(unnorm_wts, axis=1).reshape(-1,1)
+        log_wts = joint_logpdf - approx_logpdf # shape = (num_batch, num_samples)
+        log_wts_max = jnp.max(log_wts, axis=1, keepdims=True) # shape = (num_batch, 1)
+        unnorm_wts = jnp.exp(log_wts-log_wts_max) # shape = (num_batch, num_samples)
+        unnorm_wts_sum = jnp.sum(unnorm_wts, axis=1, keepdims=True) # shape = (num_batch, 1)
+        if isinstance(samples, Jaxtainer):
+            numerator = np.einsum('ab,ab...->ab...', unnorm_wts, samples) # shape = (num_batch, num_samples, dim_phi)
+            # Need to broadcast in 'opposite direction', requiring transposes:
+            result = (numerator.T/unnorm_wts_sum.T).T # shape = (num_batch, num_samples, dim_phi)
+        else:
+            result = unnorm_wts*samples/unnorm_wts_sum # shape = (num_batch, num_samples)
+        return result
 
     def eval(self, approx, x, prngkey=None, num_samples=None):
 
@@ -270,10 +280,6 @@ class ForwardKL(Loss):
         approx_del_phi = self._compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi)
         loss_del_phi_samples = np.einsum("ab,ab...->ab...", approx_lp, joint_del_phi) + \
                                np.einsum("ab,ab...->ab...", 1-approx_lp, approx_del_phi)
-
-        joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)
-        loss_samples = self._compute_importance_samples(loss_samples, approx_lp, joint_lp)
-        loss_del_phi_samples = self._compute_importance_samples(loss_del_phi_samples, approx_lp, joint_lp)
         
         loss = -1*np.mean(loss_samples, axis=1) # shape = (num_batch,)
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1) # shape = (num_batch, *phi.shape)
@@ -288,18 +294,18 @@ class ForwardKL(Loss):
         theta = approx.sample(num_samples, prngkey, phi) # shape = (num_batch, num_samples, theta_dim)
 
         approx_lp = approx.logpdf(theta, phi)  # shape = (num_batch, num_samples)
-        approx_del_phi_samples = approx.lp_del_2(theta, phi)
+        approx_del_phi_samples = approx.logpdf_del_2(theta, phi)
 
         loss_samples = approx_lp
-        joint_lp = joint.logpdf(theta, x)
+        joint_lp = self.joint.logpdf(theta, x)
         loss_samples = self._compute_importance_samples(loss_samples, approx_lp, joint_lp)
-        loss_del_phi_samples = self._compute_importance_samples(loss_del_phi_samples, approx_lp, joint_lp)
+        loss_del_phi_samples = self._compute_importance_samples(approx_del_phi_samples, approx_lp, joint_lp)
 
         # Apply control variates:
         control_variate = approx_del_phi_samples
         loss_samples = self._apply_controlvariates(loss_samples, control_variate)
         loss_del_phi_samples = self._apply_controlvariates(loss_del_phi_samples, control_variate)
-        
+
         loss = -1*np.mean(loss_samples, axis=1) # shape = (num_batch,)
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1) # shape = (num_batch, *phi.shape)
 

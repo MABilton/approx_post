@@ -10,7 +10,7 @@ from jax.random import multivariate_normal as mvn_sample
 
 class ApproximateDistribution:
 
-    _default_phi_bounds = {'lb': -1e2, 'ub': 1e2}
+    _default_phi_bounds = {'lb': -5, 'ub': 5}
 
     def __init__(self, phi, logpdf, sample=None, sample_base=None, transform=None, phi_bounds=None):
         
