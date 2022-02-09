@@ -220,7 +220,7 @@ class Gaussian(ApproximateDistribution):
     def _create_gaussian_funcs(ndim, mean_bounds, var_bounds, cov_bounds):
 
         def assemble_cholesky(phi): 
-            L = jnp.diag(phi['chol_diag'])
+            L = jnp.atleast_2d(jnp.diag(phi['chol_diag']))
             if 'chol_lowerdiag' in phi:
                 lower_diag_idx = jnp.tril_indices(ndim, k=-1) 
                 L = jax.ops.index_update(L, lower_diag_idx, phi['chol_lowerdiag'])
@@ -248,7 +248,7 @@ class Gaussian(ApproximateDistribution):
 
         def logpdf(theta, phi):
             cov = assemble_covariance(phi)
-            return  mvn_logpdf.logpdf(theta, mean=phi['mean'], cov=cov)
+            return  mvn_logpdf.logpdf(theta, mean=phi['mean'], cov=cov).squeeze()
 
         gaussian_funcs = {'logpdf': logpdf, 
                           'sample': sample, 

@@ -4,36 +4,46 @@ from arraytainers import Jaxtainer
 
 class Loss:
 
-    @staticmethod
-    def _compute_loss_del_params(loss_del_phi, x, approxdist):
+    def _compute_loss_del_params(self, loss_del_phi, x, approxdist):
+
+        # loss_del_phi.shape = (num_batch, phi_shape)
+        # x.shape = (num_batch, x_dim)
 
         if not hasattr(approxdist, 'phi_del_params'):
             loss_del_params = loss_del_phi
 
         else:
+            num_batch = x.shape[0]
+            phi_size = loss_del_phi[0,:].size
+            phi_sizes_arraytainer = loss_del_phi[0,:].sizes
+            params_shape = approxdist.params.shape
+
+            loss_del_phi = loss_del_phi.flatten(order='F').reshape(num_batch, phi_size, order='F')
+
             phi_del_params = approxdist.phi_del_params(x)
-            # Subtract 1 due to initial batch dimension:
-            phi_ndims = np.ndims(loss_del_phi) - 1
-            # Add singleton dimension for broadcasting puposes:
-            phi_del_w = phi_del_w[None,:] # shape = (1, *phi_shapes, *w_shapes)
-            
-            # Perform multipilcation on transposes for broadcasting purposes - allows us to broadcast over w dimensions:
-            loss_del_phi = loss_del_phi.T # shape = (*reverse(phi_shapes), num_batch)
-            phi_del_w = phi_del_w.T # shape = (*reverse(w_shapes), *reverse(phi_shapes), 1)
-            loss_del_params = phi_del_w * loss_del_phi # shape = (*reverse(w_shapes), *reverse(phi_shapes), num_batch)
-            loss_del_params = loss_del_params.T # shape = (num_batches, *phi_shapes, *w_shapes)
-            
-            # Sum over phi_shapes dimensions of each array in arraytainer:
-            loss_del_params = np.sum(loss_del_params, axis=np.arange(1,phi_ndims+1, like=phi_ndims)) # shape = (num_batches, *w_shapes)
-            # Sum over phi values stored as different arraytainer elements:
-            loss_del_params = loss_del_params.sum_elements() # shape = (num_batches, *w_shapes), BUT different keys
+            phi_del_params = self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape)
+
+            loss_del_params = jnp.einsum('ai,aij->aj', loss_del_phi, phi_del_params) # (num_batch, param_ndim)
+            loss_del_params = Jaxtainer.from_array(loss_del_params, shapes=(num_batch, params_shape), order='F')
 
         return loss_del_params
 
     @staticmethod
+    def _vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape):
+        
+        phi_del_params = phi_del_params.reshape(num_batch, phi_sizes_arraytainer, -1, order='F')
+
+        param_key_order = tuple(params_shape.keys())
+        for key, inner_arraytainer in phi_del_params.items():
+            array_list = [inner_arraytainer[param_key] for param_key in param_key_order]
+            phi_del_params[key] = jnp.concatenate(array_list, axis=2)
+        
+        return jnp.concatenate(phi_del_params.list_elements(), axis=1)
+
+    @staticmethod
     def _avg_over_batch_dim(loss, loss_del_phi):
         # Use np.mean on loss_del_phi since it's an arraytainer:
-        return np.mean(loss, axis=0), np.mean(loss_del_phi, axis=0)
+        return jnp.mean(loss, axis=0), np.mean(loss_del_phi, axis=0)
 
     def _apply_controlvariates(self, val, cv):
 
@@ -85,7 +95,7 @@ class Loss:
 
     def _compute_joint_del_phi_reparameterisation(self, x, theta, transform_del_phi):
         joint_del_1 = self.joint.logpdf_del_1(theta, x)
-        return np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) 
+        return np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi)
     
     @staticmethod
     def _compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi, approx_is_mixture=False):    
@@ -124,7 +134,7 @@ class ReverseKL(Loss):
                 loss, loss_del_phi = self._eval_selbo_cv(approx, phi, x, num_samples, prngkey)
         else:
             raise ValueError("Invalid method attribute value: must be either 'elbo' or 'selbo'.")
-        
+
         loss_del_params = self._compute_loss_del_params(loss_del_phi, x, approx)
 
         loss, loss_del_params = self._avg_over_batch_dim(loss, loss_del_params)
@@ -147,10 +157,10 @@ class ReverseKL(Loss):
         joint_del_phi = self._compute_joint_del_phi_reparameterisation(x, theta, transform_del_phi)
         approx_del_phi = self._compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi)
         loss_del_phi_samples = joint_del_phi - approx_del_phi
-    
+
         loss = -1*np.mean(loss_samples, axis=1)
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1)
-    
+
         return loss, loss_del_phi
         
     def _eval_elbo_cv(self, approx, phi, x, num_samples, prngkey):
@@ -278,9 +288,13 @@ class ForwardKL(Loss):
         transform_del_phi = approx.transform_del_2(epsilon, phi)
         joint_del_phi = self._compute_joint_del_phi_reparameterisation(x, theta, transform_del_phi)
         approx_del_phi = self._compute_approx_del_phi_reparameterisation(approx, phi, theta, transform_del_phi)
+
         loss_del_phi_samples = np.einsum("ab,ab...->ab...", approx_lp, joint_del_phi) + \
                                np.einsum("ab,ab...->ab...", 1-approx_lp, approx_del_phi)
-        
+
+        loss_samples = self._compute_importance_samples(loss_samples, approx_lp, joint_lp)
+        loss_del_phi_samples = self._compute_importance_samples(loss_del_phi_samples, approx_lp, joint_lp)
+
         loss = -1*np.mean(loss_samples, axis=1) # shape = (num_batch,)
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1) # shape = (num_batch, *phi.shape)
 
@@ -310,3 +324,25 @@ class ForwardKL(Loss):
         loss_del_phi = -1*np.mean(loss_del_phi_samples, axis=1) # shape = (num_batch, *phi.shape)
 
         return loss, loss_del_phi
+
+class MSE(Loss):
+
+    def __init__(self, target=None):
+        self.target = target
+
+    # Need kwargs to 'absorb' unnecessary arguments passed by optimiser:
+    def eval(self, amortised, x, **kwargs):
+
+        phi = amortised.phi(x)
+        if self.target is None:
+            target_phi = amortised.distribution.phi()
+        else:
+            target_phi = self.target
+
+        phi_diff = phi - target_phi
+        mse = (phi_diff**2).sum_all()
+        mse_del_phi = 2*phi_diff[:,None,:] # shape = (num_batch, 1, phi_shape)
+        mse_del_params = self._compute_loss_del_params(mse_del_phi, x, amortised) # shape = (num_batch, param_shape)
+        mse_del_params = np.mean(mse_del_params, axis=0) # shape = (param_shape,)
+
+        return mse, mse_del_params

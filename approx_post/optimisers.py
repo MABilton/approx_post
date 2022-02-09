@@ -14,8 +14,7 @@ class Optimiser:
 
             loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
 
-            step = self.step(loss_del_params)
-            new_params = self._get_params(approx) - step
+            new_params = self._get_params(approx) - self.step(loss_del_params)
 
             # Update method will clip params to bounds if necessary:
             approx.update(new_params)
@@ -30,7 +29,7 @@ class Optimiser:
             self._check_loop_condition(max_iter)
         
         approx.update(best_params)
-    
+
     def _initialise_loop_vars(self):
         self._loop_flag = True
         self._best_loss = inf
@@ -46,11 +45,15 @@ class Optimiser:
         return params
 
     def _print_iter(self, loss, new_params):
-        print(f'Loss = {loss}, Params = {new_params}')
+        print(f'Loss = {loss}')
+        #, Params = {new_params}
 
     def _check_loop_condition(self, max_iter):
         if self._num_iter >= max_iter:
             self._loop_flag = False
+    
+    def _initialise_optim_params(self):
+        self._num_iter = 0
 
 class Adam(Optimiser):
 
@@ -109,3 +112,11 @@ class AdaGrad(Optimiser):
     def _update_optim_params(self, s):
         self._s += s
         self._num_iter += 1
+
+class GradDescent(Optimiser):
+    
+    def __init__(self, lr=1e-1):
+        self.lr = lr
+
+    def step(self, grad):
+        return self.lr*grad
