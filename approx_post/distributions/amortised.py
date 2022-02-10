@@ -1,3 +1,4 @@
+import itertools
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -86,10 +87,50 @@ class AmortisedApproximation:
 
 class LinearRegression(AmortisedApproximation):
 
-    def __init__(self, distribution, x_dim, order):
+    def __init__(self, distribution, x_dim, prngkey, order=1):
+        lr_func, feature_func, params = self._create_regression_func(distribution, x_dim, order, prngkey)
+        self.feature_func = jax.vmap(feature_func, in_axes=0)
+        super().__init__(distribution, phi_func=lr_func, params=params)
 
-    def _create_regression_func(self, distribution, x_dim):
+    def _create_regression_func(self, distribution, x_dim, order, prngkey):
 
+        # if isinstance(order, int):
+        #     powers = Jaxtainer({key: jnp.arange(0,order) + 1 for key in distribution.phi().keys()}) 
+        # else:
+        #     powers = np.arange(0, Jaxtainer(order)) + 1
+
+        powers = jnp.arange(0,order) + 1 
+
+        phi_size = distribution.phi().size 
+        feature_size = x_dim*order + 1
+        phi_bounds = distribution.phi_bounds
+        phi_shape = distribution.phi()[0,:].shape
+
+        def lr_func(x, params):
+            features = polynomial_features(x)
+            output = jnp.einsum('ji,j->i', params['A'], features)
+            output = Jaxtainer.from_array(output, phi_shape)
+            return output # np.clip(output, phi_bounds['lb'], phi_bounds['ub'])
+
+        def polynomial_features(x):
+            x_powers = x[:,None]**powers # shape = (x_dim,) 
+            x_powers = jnp.array([1., *x_powers.flatten()]) 
+            return x_powers
+
+        params = {'A': jax.random.normal(key=prngkey, shape=(feature_size, phi_size))}
+
+        return lr_func, polynomial_features, params
+
+    def initialise(self, x, phi_0=None):
+        if phi_0 is None:
+            phi_0 = self.distribution.phi(x)
+        num_batch = x.shape[0]
+        phi_shape = phi_0.shape[1:]
+        phi_0 = phi_0.flatten(order='F').reshape(num_batch, -1, order='F')
+        features = self.feature_func(x)
+        # lstsq returns tuple; only first entry contains least square solution:
+        lstsq_coeffs = jnp.linalg.lstsq(features, phi_0)[0]
+        self.params = Jaxtainer.from_array(lstsq_coeffs, shapes=self.params.shape)
 
 class NeuralNetwork(AmortisedApproximation):
 
@@ -115,17 +156,15 @@ class NeuralNetwork(AmortisedApproximation):
         for layer in range(num_layers+2):
             # Input layer:
             if layer == 0:
-                nn_layers[layer] = self._create_layer_func(self._activations[activation]) 
-                W, b = self._initialise_layer_params(prngkey, in_dim=x_dim, out_dim=width)
+                in_dim, out_dim = x_dim, width
             # Intermediate layer:
             elif layer < num_layers+1:
-                nn_layers[layer] = self._create_layer_func(self._activations[activation]) 
-                W, b = self._initialise_layer_params(prngkey, in_dim=width, out_dim=width)
+                in_dim = out_dim = width
             # Output layer:
             else:
-                nn_layers[layer] = self._create_layer_func(self._activations['sigmoid']) 
-                W, b = self._initialise_layer_params(prngkey, in_dim=width, out_dim=phi_dim)
-            wts[f'W_{layer}'], wts[f'b_{layer}'] = W, b
+                in_dim, out_dim = width, phi_dim
+            nn_layers[layer] = self._create_layer_func(self._activations[activation]) 
+            wts[f'W_{layer}'], wts[f'b_{layer}'] = self._initialise_layer_params(prngkey, in_dim, out_dim)
             # Update prngkey so that each layer is initialised differently:
             prngkey = jax.random.split(prngkey, num=1).squeeze()
 
@@ -151,7 +190,7 @@ class NeuralNetwork(AmortisedApproximation):
     def _create_postprocessing_func(phi_shape, phi_bounds):
         def postprocessing_fun(x):
             x = Jaxtainer.from_array(x, shapes=phi_shape)
-            return (phi_bounds['ub'] - phi_bounds['lb'])*x + phi_bounds['lb']
+            return np.clip(x, phi_bounds['lb'], phi_bounds['ub'])
         return postprocessing_fun
     
     @staticmethod

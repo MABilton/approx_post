@@ -19,11 +19,14 @@ class Loss:
             params_shape = approxdist.params.shape
 
             loss_del_phi = loss_del_phi.flatten(order='F').reshape(num_batch, phi_size, order='F')
+            # shape = (num_batch, phi_dim)
 
             phi_del_params = approxdist.phi_del_params(x)
             phi_del_params = self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape)
+            # shape = (num_batch, phi_dim, param_dim)
 
-            loss_del_params = jnp.einsum('ai,aij->aj', loss_del_phi, phi_del_params) # (num_batch, param_ndim)
+            loss_del_params = jnp.einsum('ai,aij->aj', loss_del_phi, phi_del_params) 
+            # shape = (num_batch, param_ndim)
             loss_del_params = Jaxtainer.from_array(loss_del_params, shapes=(num_batch, params_shape), order='F')
 
         return loss_del_params

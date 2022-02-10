@@ -178,13 +178,8 @@ class ApproximateDistribution:
         self._phi = Jaxtainer(self._load_json(load_dir))
 
     def update(self, new_phi):
-        clipped_phi = self._clip_phi_to_bounds(new_phi)
+        clipped_phi = np.clip(new_phi, self.phi_bounds['lb'],  self.phi_bounds['ub'])
         self._phi = Jaxtainer(clipped_phi)
-
-    def _clip_phi_to_bounds(self, new_phi):
-        new_phi[new_phi < self.phi_bounds['lb']] = self.phi_bounds['lb'][new_phi < self.phi_bounds['lb']]
-        new_phi[new_phi > self.phi_bounds['ub']] = self.phi_bounds['ub'][new_phi > self.phi_bounds['ub']]
-        return new_phi
 
     @staticmethod
     def _load_json(load_dir):
