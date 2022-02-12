@@ -7,11 +7,12 @@ from arraytainers import Jaxtainer
 
 class AmortisedApproximation:
 
-    def __init__(self, distribution, phi_func, params):
+    def __init__(self, distribution, phi_func, params, preprocessing=None):
         self.distribution = distribution
         self._phi_func = jax.vmap(phi_func, in_axes=(0,None))
         self._phi_del_params = jax.vmap(jax.jacfwd(phi_func, argnums=1), in_axes=(0,None))
         self.params = Jaxtainer(params)
+        self.preprocessing = preprocessing
     
     # See: https://stackoverflow.com/questions/26467564/how-to-copy-all-attributes-of-one-python-object-to-another
     def __getattr__(self, name):
@@ -21,14 +22,19 @@ class AmortisedApproximation:
             attr = getattr(self.distribution, name)
         return attr
 
-    def phi(self, x):
+    def _preprocess_x(self, x):
         for _ in range(2-x.ndim):
             x = x[None,:]
+        if self.preprocessing is not None:
+            x = self.preprocessing(x)
+        return x
+
+    def phi(self, x):
+        x = self._preprocess_x(x)
         return self._phi_func(x, self.params)
     
     def phi_del_params(self, x):
-        for _ in range(2-x.ndim):
-            x = x[None,:]
+        x = self._preprocess_x(x)
         return self._phi_del_params(x, self.params)
     
     def _get_phi(self, phi, x):
@@ -87,10 +93,10 @@ class AmortisedApproximation:
 
 class LinearRegression(AmortisedApproximation):
 
-    def __init__(self, distribution, x_dim, prngkey, order=1):
+    def __init__(self, distribution, x_dim, prngkey, order=1, preprocessing=None):
         lr_func, feature_func, params = self._create_regression_func(distribution, x_dim, order, prngkey)
         self.feature_func = jax.vmap(feature_func, in_axes=0)
-        super().__init__(distribution, phi_func=lr_func, params=params)
+        super().__init__(distribution, phi_func=lr_func, params=params, preprocessing=preprocessing)
 
     def _create_regression_func(self, distribution, x_dim, order, prngkey):
 
@@ -103,14 +109,13 @@ class LinearRegression(AmortisedApproximation):
 
         phi_size = distribution.phi().size 
         feature_size = x_dim*order + 1
-        phi_bounds = distribution.phi_bounds
         phi_shape = distribution.phi()[0,:].shape
 
         def lr_func(x, params):
             features = polynomial_features(x)
             output = jnp.einsum('ji,j->i', params['A'], features)
-            output = Jaxtainer.from_array(output, phi_shape)
-            return output # np.clip(output, phi_bounds['lb'], phi_bounds['ub'])
+            phi = Jaxtainer.from_array(output, phi_shape)
+            return phi
 
         def polynomial_features(x):
             x_powers = x[:,None]**powers # shape = (x_dim,) 
@@ -137,7 +142,7 @@ class NeuralNetwork(AmortisedApproximation):
     _activations = {'relu': jnn.relu, 'sigmoid': jnn.sigmoid}
     _initializers = {'W': jnn.initializers.he_normal(), 'b': jnn.initializers.zeros}
 
-    def __init__(self, distribution, x_dim, prngkey, num_layers=5, width=5, activation='relu'):
+    def __init__(self, distribution, x_dim, prngkey, num_layers=5, width=5, activation='relu', preprocessing=None):
         
         try:
             assert activation.lower() in self._activations
@@ -146,7 +151,7 @@ class NeuralNetwork(AmortisedApproximation):
 
         nn_layers, wts = self._create_nn_layers(distribution, x_dim, num_layers, width, activation, prngkey)
         nn = self._create_nn_func(nn_layers, num_layers)
-        super().__init__(distribution, phi_func=nn, params=wts)
+        super().__init__(distribution, phi_func=nn, params=wts, preprocessing=preprocessing)
 
     def _create_nn_layers(self, distribution, x_dim, num_layers, width, activation, prngkey):
         
@@ -154,23 +159,23 @@ class NeuralNetwork(AmortisedApproximation):
 
         nn_layers, wts = {}, {}
         for layer in range(num_layers+2):
-            # Input layer:
-            if layer == 0:
+            if layer == 0: # Input layer
                 in_dim, out_dim = x_dim, width
-            # Intermediate layer:
-            elif layer < num_layers+1:
+                act_i = self._activations[activation]
+            elif layer < num_layers+1:  # Intermediate layer
                 in_dim = out_dim = width
-            # Output layer:
-            else:
+                act_i = self._activations[activation]
+            else: # Output layer
                 in_dim, out_dim = width, phi_dim
-            nn_layers[layer] = self._create_layer_func(self._activations[activation]) 
+                act_i = None
+            nn_layers[layer] = self._create_layer_func(act_i) 
             wts[f'W_{layer}'], wts[f'b_{layer}'] = self._initialise_layer_params(prngkey, in_dim, out_dim)
             # Update prngkey so that each layer is initialised differently:
             prngkey = jax.random.split(prngkey, num=1).squeeze()
 
         # Don't select first batch dimension in phi shape:
         phi_shape = distribution.phi().shape[1:]
-        nn_layers[num_layers+2] = self._create_postprocessing_func(phi_shape, distribution.phi_bounds)
+        nn_layers[num_layers+2] = self._create_postprocessing_func(phi_shape)
 
         return nn_layers, wts
 
@@ -178,7 +183,10 @@ class NeuralNetwork(AmortisedApproximation):
     def _create_layer_func(activation):
         def layer(x, W, b):
             # NN function will be vectorised over batch dimension of x:
-            return activation(jnp.einsum('ij,i->j', W, x) + b)
+            output = jnp.einsum('ij,i->j', W, x) + b
+            if activation is not None:
+                output = activation(output)
+            return output
         return layer
 
     def _initialise_layer_params(self, prngkey, in_dim, out_dim):
@@ -187,10 +195,9 @@ class NeuralNetwork(AmortisedApproximation):
         return W, b
     
     @staticmethod
-    def _create_postprocessing_func(phi_shape, phi_bounds):
+    def _create_postprocessing_func(phi_shape):
         def postprocessing_fun(x):
-            x = Jaxtainer.from_array(x, shapes=phi_shape)
-            return np.clip(x, phi_bounds['lb'], phi_bounds['ub'])
+            return Jaxtainer.from_array(x, shapes=phi_shape)
         return postprocessing_fun
     
     @staticmethod
@@ -201,3 +208,34 @@ class NeuralNetwork(AmortisedApproximation):
             x = nn_layers[num_layers+2](x)
             return x
         return nn
+
+class Preprocessing:
+
+    def __init__(self, preprocess_func):
+        self._func = preprocess_func
+    
+    def __call__(self, x):
+        return self._func(x)
+
+    @classmethod
+    def std_scaling(cls, data):
+
+        mean = jnp.mean(data, axis=0, keepdims=True)
+        std = jnp.std(data, axis=0, keepdims=True)
+
+        def preprocess_func(x):
+            return (x - mean)/std
+        
+        return cls(preprocess_func)
+
+    @classmethod
+    def range_scaling(cls, data):
+
+        min_val = jnp.min(data, axis=0, keepdims=True)
+        max_val = jnp.max(data, axis=0, keepdims=True)
+        range_val = max_val - min_val
+
+        def preprocess_func(x):
+            return (x - min_val)/range_val
+        
+        return cls(preprocess_func)

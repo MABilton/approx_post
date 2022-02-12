@@ -6,35 +6,27 @@ import approx
 
 class MixtureApproximation:
 
-    _coeff_key = 'unnorm_coeff'
-    _unnorm_coeff_bounds = {'lb': 1e-2, 'ub': 1e2}
+    _coeff_key = 'log_unnorm_coeff'
     
-    def __init__(self, approxdists, coefficients=None):
+    def __init__(self, approxdists):
         if isinstance(approxdists, list):
             approxdists = {idx: dist for idx, dist in enumerate(approxdists)}
-        #create names list
         if self._coeff_key in approxdists:
             raise KeyError(f"Component not allowed to be named {self._coeff_key}.")
         self._components = approxdists
-        self.unnorm_coefficients = self._initialise_coefficients(coefficients)
-        self._coefficients, self._coefficients_del_phi = self._create_coefficients_funcs()
-
-    def _initialise_coefficients(self, coefficients):
-        if coefficients is None:
-            coefficients = jnp.ones(self.num_components)
-        else:
-            coefficients = jnp.array(coefficients)
-        return self._normalise_coefficients(coefficients)
+        self._log_unnorm_coeffs = jnp.zeros(self.num_components)
+        self._coeff_funcs = self._create_coeff_funcs()
 
     def _create_coefficients_funcs(self):
 
-        def coefficients(phi):
-            unnorm_coeffs = phi[self._coeff_key]
+        def coeffs(phi):
+            unnorm_coeffs = jnp.exp(phi[self._coeff_key])
             return unnorm_coeffs/jnp.sum(unnorm_coeffs)
              
-        coefficients_del_phi = jax.jacfwd(coefficient)
+        coeffs_del_phi = jax.vmap(jax.jacfwd(coefficient), in_axes=0)
     
-        return coefficients, coefficients_del_phi
+        return {'coeffs': jax.vmap(coeffs, in_axes=0),
+                'coeff_del_phi': coeffs_del_phi}
 
     #
     #   Coefficient Methods
@@ -51,11 +43,11 @@ class MixtureApproximation:
 
     def coefficients(self, phi=None):
         phi = self._get_phi(phi)
-        return self._coefficients(phi)
+        return self._coeff_funcs['coeffs'](phi)
 
     def coefficients_del_phi(self, phi=None):
         phi = self._get_phi(phi)
-        return self._coefficients_del_phi(phi)
+        return self._coeff_funcs['coeff_del_phi'](phi)
 
     #
     #   Parameter/Phi Methods
@@ -65,23 +57,13 @@ class MixtureApproximation:
         phi = {}
         for key, approx in self._components.items():
             phi[key] = approx.phi()
-        phi[self._coeff_key] = self.unnorm_coefficients
+        phi[self._coeff_key] = self._log_unnorm_coeffs
         return Jaxtainer(phi)
 
     def update(self, new_phi):
         for key in self._components.keys():
             self._components[key].update(new_phi[key])
-        self.unnorm_coefficients = new_phi[self._coeff_key]
-
-    @property
-    def phi_bounds(self):
-        phi_bounds = {'lb': {}, 'ub': {}}
-        for key, approx in self._components.items():
-            for b in ('lb', 'ub'):
-                phi_bounds[b][key] = approx.phi_bounds[b]
-        for b in ('lb', 'ub'):
-            phi_bounds[b][self._coeff_key] = self._unnorm_coeff_bounds[b]*jnp.ones(self.num_components)
-        return Jaxtainer(phi_bounds)
+        self._log_unnorm_coeffs = new_phi[self._coeff_key]
 
     #
     #   Log-Probability and Sampling Methods
@@ -178,11 +160,21 @@ class MixtureApproximation:
             theta.append(approx.transform(epsilon[idx,:,:]))
         return jnp.stack(theta, axis=0)
 
-class GaussianMixture(MixtureApproximation):
+class RepeatedMixture(MixtureApproximation):
 
-    def __init__(self, ndim, num_components, phi=None, mean_bounds=(None,None), var_bounds=(None,None), 
-                 cov_bounds=(None,None), coefficients=None):
-        components = []
-        for i in range(num_components):
-            components.append(approx.Gaussian(ndim, phi, mean_bounds, var_bounds, cov_bounds))
-        super().__init__(components, coefficients)
+    def __init__(self, approxdist, num):
+        self._num_components = num
+        self._components = {key: approxdist for key in range(num)}
+        self._phi = {key: approxdist.phi() for key in range(num)}
+        self._log_unnorm_coeffs = jnp.zeros(self.num_components)
+        self._coeff_funcs = self._create_coeff_funcs()
+
+    def phi(self, x=None):
+        phi = self._phi
+        phi[self._coeff_key] = self._log_unnorm_coeffs
+        return Jaxtainer(phi)
+
+    def update(self, new_phi):
+        for key in self._phi.keys():
+            self._phi[key] = new_phi[key]
+        self._log_unnorm_coeffs = new_phi[self._coeff_key]

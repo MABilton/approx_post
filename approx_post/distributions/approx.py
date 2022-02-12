@@ -12,16 +12,11 @@ class ApproximateDistribution:
 
     _default_phi_bounds = {'lb': -5, 'ub': 5}
 
-    def __init__(self, phi, logpdf, sample=None, sample_base=None, transform=None, phi_bounds=None):
-        
+    def __init__(self, phi, logpdf, sample=None, sample_base=None, transform=None):
         if (sample is None) and (all(None in [sample_base, transform])):
             raise ValueError('Must specify either a sample function OR both a sample_base function AND a transform function.')
-
         self._phi = Jaxtainer(phi)
         self._func_dict = self._create_func_dict(logpdf, sample, sample_base, transform)
-        self.phi_bounds = \
-            Jaxtainer({key: self._create_bounds(phi_bounds[key], self._default_phi_bounds[key]) for key in ['lb', 'ub']})
-        self._ensure_phi_inside_bounds()
 
     @staticmethod
     def _create_func_dict(logpdf, sample, sample_base, transform):
@@ -45,60 +40,6 @@ class ApproximateDistribution:
             func_dict['transform_del_2'] = jax.vmap(jax.vmap(jax.jacfwd(transform, argnums=1), in_axes=(0,None)), in_axes=(None,0))
         
         return func_dict
-
-    def _create_bounds(self, bounds, default_val):
-
-        # Need np.ones_like rather than jnp.ones_like since _phi is a Jaxtainer:
-        ones_arraytainer = np.ones_like(self._phi)
-
-        if bounds is None:
-            bounds = default_val*ones_arraytainer
-        else:
-            bounds = self._remove_none_values_from_bounds(bounds)
-            bounds = Jaxtainer(bounds)
-            param_keys, bounds_keys = set(self._phi.keys()), set(bounds.keys())
-            try:
-                assert bounds_keys.issubset(param_keys)
-            except AssertionError:
-                warn_msg = (f"Specified bounds contains the keys ({' '.join(bounds_keys-param_keys)}), which",
-                            "aren't included in the ApproximateDistribution parameters. These keys will",
-                            "be ignored.")
-                warnings.warn(" ".join(warn_msg))
-                bounds = bounds.filter([key for key in param_keys.intersection(bounds_keys)])
-            for key in (param_keys - bounds_keys):
-                bounds[key] = jnp.array([default_val])
-            # Broadcasting will 'fill out' rest of bounds container:
-            bounds = bounds*ones_arraytainer
-        return bounds
-
-    @staticmethod
-    def _remove_none_values_from_bounds(bounds):
-        
-        bounds_iter = bounds.items() if isinstance(bounds, dict) else enumerate(bounds)
-        nonnone_bounds = {}
-        for key, val in bounds_iter:
-            if val is not None:
-                nonnone_bounds[key] = val
-            elif isinstance(val, (list, dict)):
-                nonnone_bounds[key] = ApproximateDistribution._remove_none_values_from_bounds(val)
-
-        if isinstance(bounds, list):
-            nonnone_bounds = list(nonnone_bounds.values())
-
-        return nonnone_bounds
-
-    def _ensure_phi_inside_bounds(self):
-        phi_outside_bounds = (self.phi() < self.phi_bounds['lb']) | (self.phi() > self.phi_bounds['ub'])
-        if phi_outside_bounds.any():
-            raise ValueError('At least one specified phi value lies outside of the valid range of phi values.')
-
-    def initialise_phi(self, prngkey, mask=None):
-        rand_val = jax.random.uniform(prngkey)
-        new_phi = (self.phi_ub - self.phi_lb)*rand_val + self.phi_lb
-        if mask is not None:
-            self._phi[mask] = new_phi[mask]
-        else:
-            self._phi = new_phi
 
     def phi(self, x=None):
         phi = self._phi[None,:]
@@ -178,8 +119,9 @@ class ApproximateDistribution:
         self._phi = Jaxtainer(self._load_json(load_dir))
 
     def update(self, new_phi):
-        clipped_phi = np.clip(new_phi, self.phi_bounds['lb'],  self.phi_bounds['ub'])
-        self._phi = Jaxtainer(clipped_phi)
+        # clipped_phi = np.clip(new_phi, self.phi_bounds['lb'],  self.phi_bounds['ub'])
+        # self._phi = Jaxtainer(clipped_phi)
+        self._phi = Jaxtainer(new_phi)
 
     @staticmethod
     def _load_json(load_dir):
@@ -202,37 +144,19 @@ class ApproximateDistribution:
 
 class Gaussian(ApproximateDistribution):
 
-    _min_var = 1e-3
-
-    def __init__(self, ndim, phi=None, mean_bounds=(None,None), var_bounds=(None,None), cov_bounds=(None,None)):
-        gaussian_funcs = self._create_gaussian_funcs(ndim, mean_bounds, var_bounds, cov_bounds)
-        phi_bounds = self._create_phi_bounds(ndim, mean_bounds, var_bounds, cov_bounds)
+    def __init__(self, ndim, phi=None):
+        gaussian_funcs = self._create_gaussian_funcs(ndim)
         if phi is None:
             phi = self._create_default_phi(ndim)
-        super().__init__(phi, phi_bounds=phi_bounds, **gaussian_funcs)
+        super().__init__(phi, **gaussian_funcs)
 
-    @staticmethod
-    def _create_gaussian_funcs(ndim, mean_bounds, var_bounds, cov_bounds):
-
-        def assemble_cholesky(phi): 
-            L = jnp.atleast_2d(jnp.diag(phi['chol_diag']))
-            if 'chol_lowerdiag' in phi:
-                lower_diag_idx = jnp.tril_indices(ndim, k=-1) 
-                L = jax.ops.index_update(L, lower_diag_idx, phi['chol_lowerdiag'])
-            return L 
-
-        def assemble_covariance(phi):
-            L = assemble_cholesky(phi)
-            cov = L @ L.T
-            # Ensure covariance matrix is symmetric:
-            cov = 0.5*(cov + cov.T)
-            return cov
+    def _create_gaussian_funcs(self, ndim):
 
         def sample_base(num_samples, prngkey):
             return mvn_sample(key=prngkey, mean=jnp.zeros(ndim), cov=jnp.identity(ndim), shape=(num_samples,))
 
         def transform(epsilon, phi):
-            chol = assemble_cholesky(phi)
+            chol = self._assemble_cholesky(phi)
             return phi['mean'] + jnp.einsum('ij,j->i', chol, epsilon)
 
         transform_vmap = jax.vmap(transform, in_axes=(0,None))
@@ -242,7 +166,7 @@ class Gaussian(ApproximateDistribution):
             return transform_vmap(epsilon, phi)
 
         def logpdf(theta, phi):
-            cov = assemble_covariance(phi)
+            cov = self._assemble_covariance(phi)
             return  mvn_logpdf.logpdf(theta, mean=phi['mean'], cov=cov).squeeze()
 
         gaussian_funcs = {'logpdf': logpdf, 
@@ -252,33 +176,31 @@ class Gaussian(ApproximateDistribution):
 
         return gaussian_funcs
 
-    def _create_phi_bounds(self, ndim, mean_bounds, var_bounds, cov_bounds):
+    def mean(self, x=None):
+        return self.phi(x)['mean']
 
-        if (var_bounds[0] is None):
-            var_bounds = (self._min_var, var_bounds[1])
+    def cov(self, x=None):
+        return self._assemble_covariance(self.phi(x))
 
-        # Var bounds may be array, scalar, or Arraytainer - any won't work on scalars since they're non-iterable:
-        if any(more_itertools.always_iterable(var_bounds[0] < 0)):
-            warnings.warn('Negative variance lower bound specified, which is non-meaningful;'
-                          f'variance lower bound changed to {self._min_var}')
-            var_bounds = (self._min_var, var_bounds[1])
+    def _assemble_covariance(self, phi):
+        L = self._assemble_cholesky(phi)
+        cov = L @ L.T
+        # Ensure covariance matrix is symmetric:
+        cov = 0.5*(cov + cov.T)
+        return cov
 
-        mean_bounds = [val*jnp.ones(ndim) if val is not None else None for val in mean_bounds]
-        choldiag_bounds = [val**0.5 if val is not None else None for val in var_bounds]
-        phi_bounds = {'lb': {'mean': mean_bounds[0], 'chol_diag': choldiag_bounds[0]},
-                      'ub': {'mean': mean_bounds[1], 'chol_diag': choldiag_bounds[1]}}
-        
-        if ndim > 1:
-            chollowerdiag_bounds = [jnp.sign(val)*jnp.abs(val)**0.5 if val is not None else None for val in cov_bounds]
-            phi_bounds['lb']['chol_lowerdiag'] = chollowerdiag_bounds[0]
-            phi_bounds['ub']['chol_lowerdiag'] = chollowerdiag_bounds[1]
-
-        return phi_bounds
+    def _assemble_cholesky(self, phi): 
+        chol_diag = jnp.exp(phi['log_chol_diag'])
+        L = jnp.atleast_2d(jnp.diag(chol_diag))
+        if 'chol_lowerdiag' in phi:
+            lower_diag_idx = jnp.tril_indices(ndim, k=-1) 
+            L = jax.ops.index_update(L, lower_diag_idx, phi['chol_lowerdiag'])
+        return L 
 
     @staticmethod
     def _create_default_phi(ndim):
         default_phi = {'mean': jnp.zeros(ndim), 
-                       'chol_diag': jnp.ones(ndim)}
+                       'log_chol_diag': jnp.zeros(ndim)}
         if ndim > 1:
             default_phi['chol_lowerdiag'] = jnp.zeros(ndim*(ndim-1)//2)
         return default_phi
