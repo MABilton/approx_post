@@ -215,13 +215,6 @@ class ReverseKL(Loss):
 
         return loss, loss_del_phi
 
-    def _eval_selbo_cv(self, approx, phi, x, num_samples, prngkey):
-        
-        if num_samples is None:
-            num_samples = self._default_num_samples['selbo_cv']
-        
-        pass
-
 class ForwardKL(Loss):
 
     _default_num_samples = {'cv': 1000, 'reparam': 1000}

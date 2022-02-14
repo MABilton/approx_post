@@ -1,12 +1,12 @@
 import jax
-import jax.numpy
+import jax.numpy as jnp
 from arraytainers import Jaxtainer
-# Only need Gaussian import for GaussianMixture convenience class:
-import approx
 
 class MixtureApproximation:
 
     _coeff_key = 'log_unnorm_coeff'
+    # Vectorise over batch dimension of array and p argument:
+    _randomly_choose_component_samples = jax.vmap(jax.random.choice, in_axes=(None,1,0,None,None), out_axes=0)
     
     def __init__(self, approxdists):
         if isinstance(approxdists, list):
@@ -17,13 +17,14 @@ class MixtureApproximation:
         self._log_unnorm_coeffs = jnp.zeros(self.num_components)
         self._coeff_funcs = self._create_coeff_funcs()
 
-    def _create_coefficients_funcs(self):
+    def _create_coeff_funcs(self):
 
         def coeffs(phi):
             unnorm_coeffs = jnp.exp(phi[self._coeff_key])
-            return unnorm_coeffs/jnp.sum(unnorm_coeffs)
+            norm_coeffs = unnorm_coeffs/jnp.sum(unnorm_coeffs)
+            return norm_coeffs.squeeze()
              
-        coeffs_del_phi = jax.vmap(jax.jacfwd(coefficient), in_axes=0)
+        coeffs_del_phi = jax.vmap(jax.jacfwd(coeffs), in_axes=0)
     
         return {'coeffs': jax.vmap(coeffs, in_axes=0),
                 'coeff_del_phi': coeffs_del_phi}
@@ -55,9 +56,10 @@ class MixtureApproximation:
 
     def phi(self, x=None):
         phi = {}
-        for key, approx in self._components.items():
-            phi[key] = approx.phi()
-        phi[self._coeff_key] = self._log_unnorm_coeffs
+        for idx, approx in self._components.items():
+            phi[f'component_{idx}'] = approx.phi()
+        # Add batch dimension:
+        phi[self._coeff_key] = self._log_unnorm_coeffs[None,:]
         return Jaxtainer(phi)
 
     def update(self, new_phi):
@@ -72,8 +74,9 @@ class MixtureApproximation:
     def logpdf_components(self, theta, phi=None):
         phi = self._get_phi(phi)
         logprob = []
-        for approx in self._components.values():
-            logprob.append(approx.logpdf(theta, phi))
+        for idx, approx in enumerate(self._components.values()):
+            phi_i = phi[f'component_{idx}']
+            logprob.append(approx.logpdf(theta, phi_i))
         return jnp.stack(logprob, axis=0)
 
     def pdf_components(self, theta, phi=None):
@@ -82,7 +85,8 @@ class MixtureApproximation:
 
     def pdf(self, theta, phi=None):
         phi = self._get_phi(phi)
-        return jnp.sum(coeffs*self.pdf_components(theta, phi), axis=0)
+        coeffs = self.coefficients(phi)
+        return jnp.einsum('am,mab->ab', coeffs, self.pdf_components(theta, phi))
 
     def logpdf(self, theta, phi=None):
         phi = self._get_phi(phi)
@@ -130,17 +134,20 @@ class MixtureApproximation:
         return (coeffs_del_phi*pdf_components + coeffs*pdf_del_2_components)/jnp.sum(coeffs*pdf_components, axis=0)
 
     def sample(self, num_samples, prngkey, phi=None):
+        
         phi = self._get_phi(phi)
-        component_samples = jax.random.choice(prngkey, jnp.array(range(self.num_components)), 
-                                              p=jnp.append(self.coefficients.values()), shape=(num_samples,))
+        samples = []
         for idx, dist in enumerate(self._components.values()):
-            num_samples_i = jnp.sum(component_samples==idx)
-            samples.append(dist.sample(num_samples_i, phi))
-        samples = jnp.append(samples, axis=0)
-        return jax.random.shuffle(prngkey, samples, axis=)
+            samples_i = dist.sample(num_samples, prngkey, phi[f'component_{idx}']) # shape = (num_batch, num_samples, theta_dim)
+            samples.append(samples_i)
+
+        samples = jnp.concatenate(samples, axis=0) # shape = (num_mixture, num_batch, num_samples, theta_dim)
+        samples = self._randomly_choose_component_samples(prngkey, samples, p=self.coefficients(phi), replace=False, axis=0) 
+        # shape = (num_batch, num_samples, theta_dim)
+
+        return samples
 
     def sample_base(self, num_samples, prngkey):
-        phi = self._get_phi(phi)
         epsilon = []
         for approx in self._components.values():
             epsilon.append(approx.sample_base(num_samples, prngkey))
@@ -160,18 +167,18 @@ class MixtureApproximation:
             theta.append(approx.transform(epsilon[idx,:,:]))
         return jnp.stack(theta, axis=0)
 
-class RepeatedMixture(MixtureApproximation):
+class Repeated(MixtureApproximation):
 
     def __init__(self, approxdist, num):
         self._num_components = num
         self._components = {key: approxdist for key in range(num)}
-        self._phi = {key: approxdist.phi() for key in range(num)}
+        self._phi = {f'component_{idx}': dist.phi() for idx, dist in self._components.items()}
         self._log_unnorm_coeffs = jnp.zeros(self.num_components)
         self._coeff_funcs = self._create_coeff_funcs()
 
     def phi(self, x=None):
         phi = self._phi
-        phi[self._coeff_key] = self._log_unnorm_coeffs
+        phi[self._coeff_key] = self._log_unnorm_coeffs[None,:]
         return Jaxtainer(phi)
 
     def update(self, new_phi):

@@ -30,9 +30,11 @@ class ApproximateDistribution:
 
         # Vectorise over batch dimensions of phi:
         if sample is not None:
+            # Vectorisation over num_samples input required by MixtureDistributions:
             func_dict['sample'] = jax.vmap(sample, in_axes=(None,0,None))
         if sample_base is not None:
-            func_dict['sample_base'] = sample_base
+            # Vectorisation over num_samples input required by MixtureDistributions:
+            func_dict['sample_base'] = jax.vmap(sample_base, in_axes=(0,None))
 
         # Vectorise over batch dimension of phi, then over sample dimension of epsilon:
         if transform is not None:
