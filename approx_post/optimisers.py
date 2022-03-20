@@ -40,13 +40,13 @@ class Optimiser:
         if hasattr(approx, 'params'):
             params = approx.params
         else:
-            params = approx._phi
+            params = approx.phi()
 
         return params
 
     def _print_iter(self, loss, new_params):
-        # print(f'Loss = {loss}, Params = {new_params}')
-        print(f'Loss = {loss}')
+        print(f'Loss = {loss}, Params = {new_params}')
+        # print(f'Loss = {loss}')
 
     def _check_loop_condition(self, max_iter):
         if self._num_iter >= max_iter:
