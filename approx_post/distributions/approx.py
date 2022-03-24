@@ -51,10 +51,10 @@ class ApproximateDistribution:
     @staticmethod
     def _vectorise_jaxfuncs(jaxfunc_dict):
         for key, func in jaxfunc_dict.items():
-            # Vectorise 'logpdf', 'logpdf_del_1', and 'logpdf_del_2' over batch dimensions of theta and phi, then over sample dimension of theta:
+            # Vectorise 'logpdf' funcs over batch dimensions of theta and phi, then over sample dimension of theta:
             if 'logpdf' in key:
                 jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None)), in_axes=(0,0))
-            # Vectorise 'transform' and 'transform_del_2' over batch dimension of phi, then over sample dimension of epsilon:
+            # Vectorise 'transform' over batch dimension of phi, then over sample dimension of epsilon:
             elif 'transform' in key:
                 jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None)), in_axes=(None,0))
             # Vectorise 'sample' over batch dimensions of phi:
@@ -63,10 +63,27 @@ class ApproximateDistribution:
         return jaxfunc_dict
 
     #
+    #   Pre-Processing Methods
+    #
+
+    def _get_phi(self, phi):
+        if phi is None:
+            phi = self.phi()
+        return phi
+
+    @staticmethod
+    def _reshape_input(val, ndim):
+        if val is not None:
+            val = jnp.atleast_1d(val)
+            for _ in range(ndim - val.ndim):
+                val = val[None,:]
+        return val
+
+    #
     #   Logpdf Methods
     #
 
-    def logpdf(self, theta, phi=None):
+    def logpdf(self, theta=None, epsilon=None, phi=None):
         phi = self._get_phi(phi)
         leading_dims = theta.ndim - 1
         theta = self._reshape_input(theta, ndim=3)
@@ -132,6 +149,10 @@ class ApproximateDistribution:
     #   Phi Methods
     #
 
+    @property
+    def params(self):
+        return self._phi
+
     def phi(self, x=None):
         phi = self._phi[None,:]
         # Match batch dimension of x if provided:
@@ -141,23 +162,6 @@ class ApproximateDistribution:
 
     def update(self, new_phi):
         self._phi = Jaxtainer(new_phi)
-
-    #
-    #   Helper Methods
-    #
-
-    def _get_phi(self, phi):
-        if phi is None:
-            phi = self.phi()
-        return phi
-
-    @staticmethod
-    def _reshape_input(val, ndim):
-        if val is not None:
-            val = jnp.atleast_1d(val)
-            for _ in range(ndim - val.ndim):
-                val = val[None,:]
-        return val
 
     #
     #   Save and Load Methods
@@ -211,10 +215,6 @@ class Gaussian(ApproximateDistribution):
     @staticmethod
     def _create_gaussian_funcs(ndim):
 
-        #
-        #   Covariance Assembly Functions
-        #
-
         def assemble_cholesky(phi): 
             chol_diag = jnp.exp(phi['log_chol_diag'])
             L = jnp.atleast_2d(jnp.diag(chol_diag))
@@ -229,27 +229,15 @@ class Gaussian(ApproximateDistribution):
             # Ensure covariance matrix is symmetric:
             return 0.5*(cov + cov.T)
 
-        #
-        #   Logpdf Function
-        #
-
         def logpdf(theta, phi):
             cov = assemble_covariance(phi)
             return  mvn_logpdf.logpdf(theta, mean=phi['mean'], cov=cov).squeeze()
-
-        #
-        #   Transformation Functions
-        #
 
         def transform(epsilon, phi):
             chol = assemble_cholesky(phi)
             return phi['mean'] + jnp.einsum('ij,j->i', chol, epsilon)
 
         transform_vmap = jax.vmap(transform, in_axes=(0,None))
-
-        #
-        #   Sampling Functions
-        #
 
         def sample(num_samples, phi, prngkey):
             epsilon = sample_base(num_samples, prngkey)

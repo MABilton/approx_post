@@ -11,8 +11,8 @@ class JointDistribution:
 
     def logpdf(self, theta, x):
         num_batch, num_samples = theta.shape[0:2]
-        result = self._func_dict['logpdf'](theta, x)
-        return result.reshape(num_batch, num_samples)
+        logpdf = self._func_dict['logpdf'](theta, x)
+        return logpdf.reshape(num_batch, num_samples)
     
     def logpdf_del_1(self, theta, x):
         num_batch, num_samples = theta.shape[0:2]

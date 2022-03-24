@@ -1,11 +1,11 @@
-
+import more_itertools
 import numpy as np
 import jax.numpy as jnp
 from math import inf
 
 class Optimiser:
 
-    def fit(self, approx, loss_func, x, prngkey, num_samples=None, verbose=False, max_iter=100):
+    def fit(self, approx, loss_func, x, prngkey, grad_filter=None, num_samples=None, verbose=False, max_iter=100):
         
         self._initialise_loop_vars()
         self._initialise_optim_params()
@@ -14,7 +14,9 @@ class Optimiser:
 
             loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
 
-            new_params = self._get_params(approx) - self.step(loss_del_params)
+            loss_del_params = self._filter_grad_components(loss_del_params, grad_filter)
+
+            new_params = approx.params - self.step(loss_del_params)
 
             # Update method will clip params to bounds if necessary:
             approx.update(new_params)
@@ -34,16 +36,6 @@ class Optimiser:
         self._loop_flag = True
         self._best_loss = inf
 
-    @staticmethod
-    def _get_params(approx):
-
-        if hasattr(approx, 'params'):
-            params = approx.params
-        else:
-            params = approx.phi()
-
-        return params
-
     def _print_iter(self, loss, new_params):
         print(f'Loss = {loss}, Params = {new_params}')
         # print(f'Loss = {loss}')
@@ -54,6 +46,14 @@ class Optimiser:
     
     def _initialise_optim_params(self):
         self._num_iter = 0
+
+    def _filter_grad_components(self, grad, grad_filter):
+
+        if grad_filter is not None:
+            grad = grad_filter(grad)
+            
+        return grad
+
 
 class Adam(Optimiser):
 
