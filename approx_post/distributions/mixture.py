@@ -156,6 +156,10 @@ class MixtureApproximation:
         coeffs_del_phi = self._jaxfunc_dict['coefficients_del_phi'](phi)
         return coeffs_del_phi
 
+    def perturb(self, perturbation):
+        new_params = self.params + Jaxtainer(perturbation)
+        self.update(new_params)
+
     #
     #   Log-Probability and Sampling Methods
     #
@@ -234,6 +238,8 @@ class MixtureApproximation:
         phi = self._get_phi(phi)
 
         idx_samples = self.sample_idx(num_samples, prngkey, phi) # shape = (num_batch, num_samples)
+        
+        prngkey_splits = jax.random.split(prngkey, num=self.num_components)
 
         samples = []
         for idx, (key, dist) in enumerate(self.components.items()):
@@ -241,7 +247,7 @@ class MixtureApproximation:
             # Can't vectorise over num_samples input - draw maximum number of samples requested across all batches
             # for each batch instead:
             max_num_samples_i = jnp.max(num_samples_i)
-            samples_i = dist.sample(max_num_samples_i, prngkey, phi[key]) # shape = (num_batch, max_num_samples_i, theta_dim)
+            samples_i = dist.sample(max_num_samples_i, prng_splits[idx], phi[key]) # shape = (num_batch, max_num_samples_i, theta_dim)
             # For phi values where we've drawn too many samples:
             samples_i = self._replace_excess_samples_with_nan(samples_i, num_samples_i)
             samples.append(samples_i)
@@ -280,7 +286,7 @@ class Different(MixtureApproximation):
     @classmethod
     def _create_jaxfunc_dict(cls, components):
 
-        # Deepcopy so that changes to components doesn't break funcs:
+        # Deepcopy so that (unintentional) changes to components doesn't break funcs:
         components = copy.deepcopy(components)
 
         coefficients, sample_idx, add_mixture_dim = super()._create_shared_funcs(num_components=len(components))
@@ -303,8 +309,9 @@ class Different(MixtureApproximation):
 
         def sample_base(num_samples, prngkey):
             epsilon = []
-            for dist in components.values():
-                epsilon_i = dist._func_dict['sample_base'](num_samples, prngkey)
+            prng_splits = jax.random.split(prngkey, num=len(components))
+            for idx, dist in enumerate(components.values()):
+                epsilon_i = dist._func_dict['sample_base'](num_samples, prng_splits[idx])
                 epsilon.append(epsilon_i)
             return jnp.stack(epsilon, axis=0)
 
@@ -346,12 +353,6 @@ class Different(MixtureApproximation):
         # Add batch dimension:
         phi[self._coeff_key] = self._log_unnorm_coeffs
         return Jaxtainer(phi)
-
-    def perturb(self, perturb_dict):
-        self._log_unnorm_coeffs += perturb_dict[self._coeff_key]
-        for key in self.components.keys():
-            perturb_params = self._components[key].params + perturb_dict[key]
-            self._components[key].update(perturb_params)
 
     def update(self, new_phi):
         for key in self.components.keys():
@@ -397,17 +398,18 @@ class Identical(MixtureApproximation):
             theta = add_mixture_dim(theta)
             return vmap_logpdf_components(theta, noncoeff_phi)
 
-        # Vectorised over the num_mixture dimension of epsilon and phi:
+        # Transform func vectorised over the num_mixture dimension of epsilon and phi:
         vmap_transform = jax.vmap(approxdist._func_dict['transform'], in_axes=(0,0))
-        
         def transform(epsilon, phi):
             noncoeff_phi = stack_noncoeff_phi(phi)
             epsilon = add_mixture_dim(epsilon)
             return vmap_transform(epsilon, noncoeff_phi)
 
+        # Sample_base func vectorised over the PRNG Key dimension:
+        vmap_sample_base = jax.vmap(approxdist._func_dict['sample_base'], in_axes=(None,0))
         def sample_base(num_samples, prngkey):
-            epsilon = approxdist._func_dict['sample_base'](num_samples, prngkey)
-            return jnp.repeat(epsilon, num_components, axis=0)
+            prng_splits = jax.random.split(prngkey, num=num_components)
+            return vmap_sample_base(num_samples, prng_splits)
 
         pdf, logpdf, logpdf_epsilon = super()._create_pdf_funcs(coefficients, logpdf_components, transform)
 
@@ -452,8 +454,3 @@ class Identical(MixtureApproximation):
         for key in self._noncoeff_phi.keys():
             self._noncoeff_phi[key] = new_phi[key]
         self._log_unnorm_coeffs = jnp.atleast_1d(new_phi[self._coeff_key].squeeze())
-
-    def perturb(self, perturb_dict):
-        self._log_unnorm_coeffs += perturb_dict[self._coeff_key]
-        for key in self._noncoeff_phi.keys():
-            self._noncoeff_phi[key] += perturb_dict[key]
