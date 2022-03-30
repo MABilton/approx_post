@@ -18,6 +18,7 @@ class Loss:
 
         else:
             num_batch = x.shape[0]
+            # [0,:] to remove batch dimension:
             phi_size = loss_del_phi[0,:].size
             phi_sizes_arraytainer = loss_del_phi[0,:].sizes
             params_shape = approxdist.params.shape
@@ -26,10 +27,13 @@ class Loss:
             # shape = (num_batch, phi_dim)
 
             phi_del_params = approxdist.phi_del_params(x)
-            phi_del_params = self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape)
-            # shape = (num_batch, phi_dim, param_dim)
+
+            phi_del_params = \
+            self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape) 
+            # shape = (num_batch, phi_dims, param_size)
 
             loss_del_params = jnp.einsum('ai,aij->aj', loss_del_phi, phi_del_params) 
+
             # shape = (num_batch, param_ndim)
             loss_del_params = Jaxtainer.from_array(loss_del_params, shapes=(num_batch, params_shape), order='F')
 
@@ -38,12 +42,12 @@ class Loss:
     @staticmethod
     def _vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape):
         
+        # Flatten param dimensions:
         phi_del_params = phi_del_params.reshape(num_batch, phi_sizes_arraytainer, -1, order='F')
 
-        param_key_order = tuple(params_shape.keys())
-        for key, inner_arraytainer in phi_del_params.items():
-            array_list = [inner_arraytainer[param_key] for param_key in param_key_order]
-            phi_del_params[key] = jnp.concatenate(array_list, axis=2)
+        for phi_key_tuple in phi_sizes_arraytainer.list_keys():
+            array_list = [phi_del_params.get(*phi_key_tuple, *param_key_tuple) for param_key_tuple in params_shape.list_keys()]
+            phi_del_params.assign(jnp.concatenate(array_list, axis=2), *phi_key_tuple)
         
         return jnp.concatenate(phi_del_params.list_elements(), axis=1)
 
@@ -133,21 +137,6 @@ class Loss:
             output = cv_samples.reshape(val.shape, order='F')
         return output
 
-
-    #
-    #   Reparam
-    #
-
-    def _compute_joint_del_phi_reparameterisation(self, x, theta, transform_del_phi):
-        joint_del_1 = self.joint.logpdf_del_1(theta, x)
-        return np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi)
-
-    @staticmethod
-    def _compute_approx_del_phi_reparam(approx, phi, theta, transform_del_phi):    
-        approx_del_1 = approx.logpdf_del_1(theta, phi) # shape = (num_batch, num_samples, theta_dim)
-        approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi)
-        return approx_del_phi
-
 class ELBO(Loss):
 
     _default_num_samples = {'cv': 100, 'reparam': 10}
@@ -176,21 +165,17 @@ class ELBO(Loss):
             num_samples = self._default_num_samples['reparam']
 
         epsilon = approx.sample_base(num_samples, prngkey) # shape = (num_batch, num_samples, theta_dim)
-        theta = approx.transform(epsilon, phi) # shape = (num_batch, num_samples, theta_dim)
+        theta = approx.transform(epsilon, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
-        approx_lp = approx.logpdf(theta, phi) # shape = (num_batch, num_samples)
+        approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
         joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)
         loss_samples = joint_lp - approx_lp # shape = (num_batch, num_samples)
 
-        transform_del_phi = approx.transform_del_2(epsilon, phi) # shape = (num_batch, num_samples, theta_dim, phi_dim)
-        # joint_del_1 = self.joint.logpdf_del_1(theta, x) # shape = (num_batch, num_samples, theta_dim)
-        # joint_del_phi = np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
-        # approx_del_1 = approx.logpdf_del_1(theta, phi) # shape = (num_batch, num_samples, theta_dim)
-        # approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
-        # approx_del_phi = approx.logpdf_del_2(theta, phi) 
-
-        joint_del_phi = self._compute_joint_del_phi_reparameterisation(x, theta, transform_del_phi)
-        approx_del_phi = self._compute_approx_del_phi_reparam(approx, phi, theta, transform_del_phi)
+        transform_del_phi = approx.transform_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, theta_dim, phi_dim)
+        joint_del_1 = self.joint.logpdf_del_1(theta, x) # shape = (num_batch, num_samples, theta_dim)
+        joint_del_phi = np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
+        approx_del_1 = approx.logpdf_del_1(theta, phi=phi) # shape = (num_batch, num_samples, theta_dim)
+        approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
 
         loss_del_phi_samples = joint_del_phi - approx_del_phi # shape = (num_batch, num_samples, phi_dim)
 
@@ -204,11 +189,11 @@ class ELBO(Loss):
         if num_samples is None:
             num_samples = self._default_num_samples['cv']
 
-        theta = approx.sample(num_samples, prngkey, phi) # shape = (num_batch, num_samples, theta_dim)
+        theta = approx.sample(num_samples, prngkey, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
-        approx_lp = approx.logpdf(theta, phi) # shape = (num_batch, num_samples)
+        approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
         joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)
-        approx_del_phi = approx.logpdf_del_2(theta, phi) # shape = (num_batch, num_samples, phi_dim)
+        approx_del_phi = approx.logpdf_del_2(theta, phi=phi) # shape = (num_batch, num_samples, phi_dim)
 
         loss_samples = (joint_lp - approx_lp) # shape = (num_batch, num_samples)
         loss_del_phi_samples = np.einsum("ab,ab...->ab...", loss_samples, approx_del_phi) # shape = (num_batch, num_samples, phi_dim)
@@ -252,12 +237,12 @@ class SELBO(Loss):
         epsilon = approx.sample_base(num_samples, prngkey) # shape = (num_samples, num_mixture, dim_theta)
         theta = approx.transform(epsilon, phi=phi) # shape = (num_batch, num_samples, num_mixture, dim_theta)
 
-        approx_lp = self._compute_component_logpdf(approx.logpdf, theta, phi) # shape = (num_batch, num_samples, num_mixture)
-        joint_lp = self._compute_component_logpdf(self.joint.logpdf, theta, x)  # shape = (num_batch, num_samples, num_mixture)
+        approx_lp = self._compute_component_logpdf(approx.logpdf, theta, phi=phi) # shape = (num_batch, num_samples, num_mixture)
+        joint_lp = self._compute_component_logpdf(self.joint.logpdf, theta, x=x)  # shape = (num_batch, num_samples, num_mixture)
         loss_components = jnp.mean(joint_lp - approx_lp, axis=1) # shape = (num_batch, num_mixture)
 
         transform_del_phi = approx.transform_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, num_mixture, theta_dim, phi_dim)
-        joint_del_1 = self._compute_component_logpdf(self.joint.logpdf_del_1, theta, x) # shape = (num_batch, num_samples, num_mixture, theta_dim)
+        joint_del_1 = self._compute_component_logpdf(self.joint.logpdf_del_1, theta, x=x) # shape = (num_batch, num_samples, num_mixture, theta_dim)
         joint_del_phi = np.einsum('abmi...,abmi->abm...', transform_del_phi, joint_del_1) # shape = (num_batch, num_samples, num_mixture, phi_shape)
         approx_del_phi = approx.logpdf_epsilon_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, num_mixture, phi_shape)
         elbo_grad_components = np.mean(joint_del_phi - approx_del_phi, axis=1) # shape = (num_batch, num_mixture, phi_shape)
@@ -271,11 +256,11 @@ class SELBO(Loss):
 
         return loss, loss_del_phi
 
-    def _compute_component_logpdf(self, logpdf_func, theta, phi_or_x):
+    def _compute_component_logpdf(self, logpdf_func, theta, **phi_or_x):
         num_batch, num_components = theta.shape[0], theta.shape[2]
         theta_reshaped = self._reshape_theta(theta) # shape = (num_batch*num_mixture, num_samples, theta_dim)
         phi_or_x_tiled = self._tile_phi_or_x(phi_or_x, num_components) # shape = (num_batch*num_mixture, x_dim/phi_dim)
-        logpdf = logpdf_func(theta_reshaped, phi_or_x_tiled) # shape = (num_batch*num_mixture, num_samples, *)
+        logpdf = logpdf_func(theta_reshaped, **phi_or_x_tiled) # shape = (num_batch*num_mixture, num_samples, *)
         return self._split_logpdf_dim(logpdf, num_batch, num_components) # shape = (num_batch, num_samples, num_mixture, *)
 
     @staticmethod
@@ -286,11 +271,15 @@ class SELBO(Loss):
 
     @staticmethod
     def _tile_phi_or_x(phi_or_x, num_components):
-        if isinstance(phi_or_x, Jaxtainer):
-            phi_or_x_tiled = np.tile(phi_or_x, (num_components,1)) # phi.shape = (num_batch, phi_dim)
+
+        key = list(phi_or_x.keys())[0]
+
+        if isinstance(phi_or_x[key], Jaxtainer):
+            phi_or_x_tiled = np.tile(phi_or_x[key], (num_components,1)) # phi.shape = (num_batch, phi_dim)
         else:
-            phi_or_x_tiled = jnp.tile(phi_or_x, (num_components,1)) # x.shape = (num_batch, x_dim)
-        return phi_or_x_tiled
+            phi_or_x_tiled = jnp.tile(phi_or_x[key], (num_components,1))  # x.shape = (num_batch, x_dim)
+        
+        return {key: phi_or_x_tiled}
 
     @staticmethod
     def _split_logpdf_dim(output, num_batch, num_mixture):
@@ -362,14 +351,16 @@ class ForwardKL(Loss):
             num_samples = self._default_num_samples['reparam']
 
         epsilon = approx.sample_base(num_samples, prngkey)
-        theta = approx.transform(epsilon, phi)
+        theta = approx.transform(epsilon, phi=phi)
 
-        approx_lp = approx.logpdf(theta, phi) # shape = (num_batch, num_samples)
+        approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
         loss_samples = approx_lp
         
-        transform_del_phi = approx.transform_del_2(epsilon, phi)
-        joint_del_phi = self._compute_joint_del_phi_reparam(x, theta, transform_del_phi)
-        approx_del_phi = self._compute_approx_del_phi_reparam(approx, phi, theta, transform_del_phi)
+        transform_del_phi = approx.transform_del_2(epsilon, phi=phi)
+        joint_del_1 = self.joint.logpdf_del_1(theta, x) # shape = (num_batch, num_samples, theta_dim)
+        joint_del_phi = np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
+        approx_del_1 = approx.logpdf_del_1(theta, phi=phi) # shape = (num_batch, num_samples, theta_dim)
+        approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
 
         loss_del_phi_samples = np.einsum("ab,ab...->ab...", approx_lp, joint_del_phi) + \
                                np.einsum("ab,ab...->ab...", 1-approx_lp, approx_del_phi)
@@ -387,10 +378,10 @@ class ForwardKL(Loss):
         if num_samples is None:
             num_samples = self._default_num_samples['cv']
 
-        theta = approx.sample(num_samples, prngkey, phi) # shape = (num_batch, num_samples, theta_dim)
+        theta = approx.sample(num_samples, prngkey, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
-        approx_lp = approx.logpdf(theta, phi)  # shape = (num_batch, num_samples)
-        approx_del_phi_samples = approx.logpdf_del_2(theta, phi)
+        approx_lp = approx.logpdf(theta, phi=phi)  # shape = (num_batch, num_samples)
+        approx_del_phi_samples = approx.logpdf_del_2(theta, phi=phi)
 
         loss_samples = approx_lp
         joint_lp = self.joint.logpdf(theta, x)

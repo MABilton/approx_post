@@ -83,7 +83,7 @@ class ApproximateDistribution:
     #   Logpdf Methods
     #
 
-    def logpdf(self, theta=None, epsilon=None, phi=None):
+    def logpdf(self, theta, phi=None):
         phi = self._get_phi(phi)
         leading_dims = theta.ndim - 1
         theta = self._reshape_input(theta, ndim=3)

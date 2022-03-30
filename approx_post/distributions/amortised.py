@@ -1,57 +1,184 @@
+import copy
 import itertools
+import inspect
 import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.nn as jnn
 from arraytainers import Jaxtainer
 
+from . import mixture 
+
 class AmortisedApproximation:
 
-    def __init__(self, distribution, phi_func, params, preprocessing=None):
-        self.distribution = distribution
-        self._phi_func = jax.vmap(phi_func, in_axes=(0,None))
-        self._phi_del_params = jax.vmap(jax.jacfwd(phi_func, argnums=1), in_axes=(0,None))
-        self.params = Jaxtainer(params)
-        self.preprocessing = preprocessing
-    
-    # See: https://stackoverflow.com/questions/26467564/how-to-copy-all-attributes-of-one-python-object-to-another
-    def __getattr__(self, name):
-        if name in dir(self):
-            attr = getattr(self, name)
-        else:
-            attr = getattr(self.distribution, name)
-        return attr
+    def __init__(self, distribution, phi_func_factory, params_factory, componentwise=True, preprocessing=None, prngkey=None):
+        self._distribution = distribution
+        self._phi_func_factory = phi_func_factory
+        self._params_factory = params_factory
+        self._preprocessing = preprocessing
+        self._componentwise = componentwise
+        self._phifunc_dict = self._create_phifunc_dict(distribution)
+        self._params = self._create_params(distribution, prngkey)
 
-    def _preprocess_x(self, x):
+    #
+    #   Properties
+    #
+
+    @property
+    def distribution(self):
+        return self._distribution
+    
+    @property
+    def params(self):
+        return self._params
+
+    @property
+    def is_identical_mixture(self):
+        return isinstance(self.distribution, mixture.Identical)
+
+    @property
+    def is_componentwise(self):
+        return self._componentwise if isinstance(self.distribution, mixture.MixtureApproximation) else False
+
+    #
+    #   Phi Function Construction-Related Methods
+    #
+
+    def _create_phifunc_dict(self, distribution):
+        phi_func = self._create_phi_func(distribution)
+        phifunc_dict = {'phi': phi_func, 
+                        'phi_del_params': jax.jacfwd(phi_func, argnums=1)}
+        for key, func in phifunc_dict.items():
+            phifunc_dict[key] = jax.vmap(func, in_axes=(0,None))
+        return phifunc_dict
+
+    def _create_phi_func(self, distribution):
+        # Create phi function for each lsmixture component:
+        if self.is_componentwise:
+            # If mixture components are identical:
+            if self.is_identical_mixture:
+                phi_func = self._create_identical_mixture_phi_func(distribution, self._phi_func_factory)
+            # If mixture components are different:
+            else:
+                phi_func = self._create_different_mixture_phi_func(distribution, self._phi_func_factory)
+        # Create single function to compute entire phi:
+        else:
+            phi_func = self._phi_func_factory(distribution.params)
+        return phi_func
+
+    @staticmethod
+    def _create_identical_mixture_phi_func(distribution, phi_func_factory):
+
+        # NN to predict parameters of each component:
+        first_component = list(distribution.components.values())[0]
+        noncoeff_func = phi_func_factory(first_component.params)
+        vmap_noncoeff_func = jax.vmap(noncoeff_func, in_axes=(None,0))
+        # NN to predict mixture coefficients - ensure batch dimension is removed:
+        coeffs = jnp.atleast_1d(distribution.coefficients().squeeze())
+        coeff_func = phi_func_factory(coeffs)
+        # Mixture coefficient keys and non-coefficient keys:
+        coeff_key = distribution.coefficient_key
+        available_noncoeff_keys = set(distribution.components.keys())
+
+        def phi_func(x, params):
+            # Compute phi values of components present in params - can 'freeze' a component by not specifying it in params:
+            noncoeff_keys = available_noncoeff_keys.intersection(set(params.keys()))
+            noncoeff_params = np.stack([params[key] for key in noncoeff_keys], axis=0)
+            noncoeff_phi = vmap_noncoeff_func(x, noncoeff_params)
+            phi = Jaxtainer({key: noncoeff_phi[idx,:] for idx, key in enumerate(noncoeff_keys)})
+            phi[coeff_key] = coeff_func(x, params[coeff_key])
+            return phi
+
+        return phi_func
+
+    @staticmethod
+    def _create_different_mixture_phi_func(distribution, phi_func_factory):
+
+        # NNs to predict parameters of each component:
+        noncoeff_func_dict = {}
+        for key, component in distribution.components.keys():
+            noncoeff_nn_dict[key] = phi_func_factory(component.params)
+        # NN to predict mixture coefficients:
+        coeff_func = phi_func_factory(distribution.coefficients()) 
+        # Mixture coefficient keys and non-coefficient keys: 
+        coeff_key = distribution.coefficient_key
+        available_noncoeff_keys = set(distribution.components.keys())
+
+        def phi_func(x, params):
+            noncoeff_keys = available_noncoeff_keys.intersection(set(params.keys()))
+            phi = {}
+            for key in noncoeff_keys:
+                phi[key] = noncoeff_func_dict(x, params[key])
+            phi[coeff_key] = coeff_func(x, params[coeff_key])
+            return Jaxtainer(phi)
+
+        return phi_func
+
+    #
+    #   Parameter Methods
+    #
+
+    def _create_params(self, distribution, prngkey):
+        if self.is_componentwise:
+            params = {}
+            for key, component in distribution.components.items():
+                params[key] = self._params_factory(component.params, prngkey)
+                prngkey = jax.random.split(prngkey, num=1).squeeze()
+            # Ensure that batch dimension is removed from coefficients:
+            coeffs = jnp.atleast_1d(distribution.coefficients().squeeze())
+            params[distribution.coefficient_key] = self._params_factory(coeffs, prngkey)
+        else:
+            params = self._params_factory(distribution.params, prngkey)
+        return Jaxtainer(params)
+
+    def update(self, new_params):
+        self._params = Jaxtainer(new_params)
+
+    #
+    #   Phi Methods
+    #
+
+    def preprocess(self, x):
         for _ in range(2-x.ndim):
             x = x[None,:]
-        if self.preprocessing is not None:
-            x = self.preprocessing(x)
+        if self._preprocessing is not None:
+            x = self._preprocessing(x)
         return x
 
     def phi(self, x):
-        x = self._preprocess_x(x)
-        return self._phi_func(x, self.params)
+        x = self.preprocess(x)
+        phi = self._phifunc_dict['phi'](x, self.params)
+        return phi
     
     def phi_del_params(self, x):
-        x = self._preprocess_x(x)
-        return self._phi_del_params(x, self.params)
+        x = self.preprocess(x)
+        phi_del_params = self._phifunc_dict['phi_del_params'](x, self.params)
+        return phi_del_params
     
     def _get_phi(self, phi, x):
-        if (phi is None) or (x is None):
-            TypeError('Must specify either a phi value or an x value.')
+        if (phi is None) and (x is None):
+            raise ValueError('Must specify either phi or x.')
+        if (phi is not None) and (not isinstance(phi, Jaxtainer)):
+            raise TypeError('Provided phi value is not a Jaxtainer. Did you mean to specify x ' 
+                            'instead of phi? If so, explicitly use the "x" keyword argument.')
         if phi is None:
             phi = self.phi(x)
         return phi
+    
+    #
+    #   General Distribution Methods
+    #
 
-    # Methods used by all approximate distributions:
     def logpdf(self, theta, phi=None, x=None):
         phi = self._get_phi(phi, x)
         return self.distribution.logpdf(theta, phi)
     
-    def sample(self, num_samples, phi=None, x=None):
+    def sample(self, num_samples, prngkey, phi=None, x=None):
         phi = self._get_phi(phi, x)
-        return self.distribution.sample(num_samples, phi)
+        return self.distribution.sample(num_samples, prngkey, phi=phi)
+
+    def sample_base(self, num_samples, prngkey):
+        return self.distribution.sample_base(num_samples, prngkey)
 
     def transform(self, epsilon, phi=None, x=None):
         phi = self._get_phi(phi, x)
@@ -69,118 +196,126 @@ class AmortisedApproximation:
         phi = self._get_phi(phi, x)
         return self.distribution.logpdf_del_2(theta, phi)
 
-    # Methods used by mixture approximations:
+    #
+    #   Mixture Distribution Methods
+    #
+
+    def _check_if_mixture(self, func_frame):
+        if not isinstance(self.distribution, mixture.MixtureApproximation):
+            caller_func_name = inspect.getframeinfo(func_frame).function
+            raise TypeError('Amortised distribution is not a mixture so it does, '
+                            f'not have a {caller_func_name} method.')
+
     def coefficients(self, phi=None, x=None):
+        self._check_if_mixture(inspect.currentframe())
         phi = self._get_phi(phi, x)
         return self.distribution.coefficients(phi)
-    
-    def logprob_components(self, theta, phi=None, x=None):
+
+    def coefficients_del_phi(self, phi=None, x=None):
+        self._check_if_mixture(inspect.currentframe())
         phi = self._get_phi(phi, x)
-        self.distribution.logprob_components(theta, phi)
+        return self.distribution.coefficients_del_phi(phi)
 
-    def logprob_del_1_components(self, phi=None, x=None):
+    def pdf(self, theta, phi=None, x=None):
+        self._check_if_mixture(inspect.currentframe())
         phi = self._get_phi(phi, x)
-        self.distribution.logprob_del_1_components(theta, phi)
+        return self.distribution.pdf(theta, phi)
 
-    def update(self, new_params):
-        self.params = Jaxtainer(new_params)
+    def logpdf_epsilon(self, epsilon, phi=None, x=None):
+        self._check_if_mixture(inspect.currentframe())
+        phi = self._get_phi(phi, x)
+        return self.distribution.logpdf_epsilon(epsilon, phi)
 
-    def save(self):
-        pass
-    
-    def load(self):
-        pass
+    def logpdf_epsilon_del_2(self, epsilon, phi=None, x=None):
+        self._check_if_mixture(inspect.currentframe())
+        phi = self._get_phi(phi, x)
+        return self.distribution.logpdf_epsilon_del_2(epsilon, phi)
 
-class LinearRegression(AmortisedApproximation):
+    def sample_idx(self, num_samples, prngkey, phi=None, x=None):
+        self._check_if_mixture(inspect.currentframe())
+        phi = self._get_phi(phi, x)
+        return self.distribution.sample_idx(num_samples, prngkey, phi)
 
-    def __init__(self, distribution, x_dim, prngkey, order=1, preprocessing=None):
-        lr_func, feature_func, params = self._create_regression_func(distribution, x_dim, order, prngkey)
-        self.feature_func = jax.vmap(feature_func, in_axes=0)
-        super().__init__(distribution, phi_func=lr_func, params=params, preprocessing=preprocessing)
+    def add_component(self, component=None, prngkey=None):
 
-    def _create_regression_func(self, distribution, x_dim, order, prngkey):
+        if not self.is_componentwise:
+            raise TypeError('Cannot add a component to a non-componentwise amortized distribution.')
 
-        # if isinstance(order, int):
-        #     powers = Jaxtainer({key: jnp.arange(0,order) + 1 for key in distribution.phi().keys()}) 
-        # else:
-        #     powers = np.arange(0, Jaxtainer(order)) + 1
+        # Perform operations on copy initially, in case creation of params fails (e.g. because prngkey not specified)
+        new_distribution = copy.deepcopy(self.distribution)
 
-        powers = jnp.arange(0,order) + 1 
+        # Add component to copy of underlying distribution:
+        if self.is_identical_mixture:
+            if component is not None:
+                raise ValueError('Cannot specify component distribution for mixture distribution composed of identical components.')
+            new_distribution.add_component()
+        else:
+            if component is None:
+                raise ValueError('Must specify component distribution for mixture distribution composed of different components.')
+            new_distribution.add_component(component)
+        
+        # Create new functions and params:
+        new_phifunc_dict = self._create_phifunc_dict(new_distribution)
+        new_params = self._create_params(new_distribution, prngkey)
+        for key, val in self.params.items():
+            if key != self.distribution.coefficient_key:
+                new_params[key] = val
+        
+        # If no errors raised, can update attributes:
+        self._distribution = new_distribution
+        self._params = new_params
+        self._phifunc_dict = new_phifunc_dict
 
-        phi_size = distribution.phi().size 
-        feature_size = x_dim*order + 1
-        phi_shape = distribution.phi()[0,:].shape
-
-        def lr_func(x, params):
-            features = polynomial_features(x)
-            output = jnp.einsum('ji,j->i', params['A'], features)
-            phi = Jaxtainer.from_array(output, phi_shape)
-            return phi
-
-        def polynomial_features(x):
-            x_powers = x[:,None]**powers # shape = (x_dim,) 
-            x_powers = jnp.array([1., *x_powers.flatten()]) 
-            return x_powers
-
-        params = {'A': jax.random.normal(key=prngkey, shape=(feature_size, phi_size))}
-
-        return lr_func, polynomial_features, params
-
-    def initialise(self, x, phi_0=None):
-        if phi_0 is None:
-            phi_0 = self.distribution.phi(x)
-        num_batch = x.shape[0]
-        phi_shape = phi_0.shape[1:]
-        phi_0 = phi_0.flatten(order='F').reshape(num_batch, -1, order='F')
-        features = self.feature_func(x)
-        # lstsq returns tuple; only first entry contains least square solution:
-        lstsq_coeffs = jnp.linalg.lstsq(features, phi_0)[0]
-        self.params = Jaxtainer.from_array(lstsq_coeffs, shapes=self.params.shape)
 
 class NeuralNetwork(AmortisedApproximation):
 
     _activations = {'relu': jnn.relu, 'sigmoid': jnn.sigmoid}
     _initializers = {'W': jnn.initializers.he_normal(), 'b': jnn.initializers.zeros}
 
-    def __init__(self, distribution, x_dim, prngkey, num_layers=5, width=5, activation='relu', preprocessing=None):
+    def __init__(self, distribution, x_dim, prngkey, num_layers=5, width=5, activation='relu', componentwise=True, preprocessing=None):
         
-        try:
-            assert activation.lower() in self._activations
-        except (AssertionError, AttributeError):
+        if (not isinstance(activation, str)) and (activation.lower() not in self._activations):
             raise ValueError(f'Invalid value specified for activation; valid options are: {", ".join(self._activations.keys())}')
 
-        nn_layers, wts = self._create_nn_layers(distribution, x_dim, num_layers, width, activation, prngkey)
-        nn = self._create_nn_func(nn_layers, num_layers)
-        super().__init__(distribution, phi_func=nn, params=wts, preprocessing=preprocessing)
+        nn_func_factory = lambda dist_params: self._nn_func_factory(dist_params, x_dim, num_layers, width, activation)
+        wts_factory = lambda dist_params, prngkey: self._wts_factory(dist_params, prngkey, x_dim, num_layers, width)
 
-    def _create_nn_layers(self, distribution, x_dim, num_layers, width, activation, prngkey):
+        super().__init__(distribution, prngkey=prngkey, phi_func_factory=nn_func_factory, 
+                         params_factory=wts_factory, preprocessing=preprocessing, componentwise=componentwise)
+
+    #
+    #   NN Function Factory
+    #
+
+    def _nn_func_factory(self, params, input_dim, num_layers, width, activation):
         
-        phi_dim = distribution.phi().size
+        output_shape = params.shape
 
-        nn_layers, wts = {}, {}
+        # Create dictionary of functions containing each nn layer:
+        nn_layers = {}
         for layer in range(num_layers+2):
-            if layer == 0: # Input layer
-                in_dim, out_dim = x_dim, width
-                act_i = self._activations[activation]
-            elif layer < num_layers+1:  # Intermediate layer
-                in_dim = out_dim = width
-                act_i = self._activations[activation]
-            else: # Output layer
-                in_dim, out_dim = width, phi_dim
-                act_i = None
-            nn_layers[layer] = self._create_layer_func(act_i) 
-            wts[f'W_{layer}'], wts[f'b_{layer}'] = self._initialise_layer_params(prngkey, in_dim, out_dim)
-            # Update prngkey so that each layer is initialised differently:
-            prngkey = jax.random.split(prngkey, num=1).squeeze()
+            act_i = self._get_ith_layer_activation(layer, activation, num_layers)
+            nn_layers[layer] = self._create_ith_layer_func(act_i) 
+        nn_layers[num_layers+2] = self._create_postprocessing_func(output_shape)
 
-        # Don't select first batch dimension in phi shape:
-        phi_shape = distribution.phi().shape[1:]
-        nn_layers[num_layers+2] = self._create_postprocessing_func(phi_shape)
+        # Function which calls nn layers:
+        def nn_func(x, wts):
+            for layer in range(num_layers+2):
+                x = nn_layers[layer](x, wts[self.W_key(layer)], wts[self.b_key(layer)])
+            phi = nn_layers[num_layers+2](x)
+            return phi
 
-        return nn_layers, wts
+        return nn_func
+
+    def _get_ith_layer_activation(self, layer, activation, num_layers):
+        if layer < num_layers+1:  # Input or Intermediate layer
+            act_i = self._activations[activation]
+        else: # Output layer
+            act_i = None
+        return act_i
 
     @staticmethod
-    def _create_layer_func(activation):
+    def _create_ith_layer_func(activation):
         def layer(x, W, b):
             # NN function will be vectorised over batch dimension of x:
             output = jnp.einsum('ij,i->j', W, x) + b
@@ -189,25 +324,55 @@ class NeuralNetwork(AmortisedApproximation):
             return output
         return layer
 
-    def _initialise_layer_params(self, prngkey, in_dim, out_dim):
-        W = self._initializers['W'](prngkey, (in_dim, out_dim))
-        b = self._initializers['b'](prngkey, (out_dim,))
-        return W, b
+    @staticmethod
+    def _create_postprocessing_func(output_shape):
+
+        def postprocessing(x):
+            if isinstance(output_shape, Jaxtainer):
+                output = Jaxtainer.from_array(x, shapes=output_shape)
+            # If NN is predicting mixture coefficients, which is a regular array:
+            else:
+                output = x.reshape(output_shape)
+            return output
+
+        return postprocessing
+
+    #
+    #   NN Weights Factory
+    #
+
+    def _wts_factory(self, params, prngkey, input_dim, num_layers, width):
+
+        if prngkey is None:
+            raise ValueError('Must specify a PRNG key to initialise neural network weights.')
+
+        output_dim = params.size
+        nn_wts = {}
+        for layer in range(num_layers+2):
+            input_dim_i, output_dim_i = self._get_ith_layer_dimensions(layer, input_dim, width, output_dim, num_layers)
+            nn_wts[self.W_key(layer)] = self._initializers['W'](prngkey, (input_dim_i, output_dim_i))
+            nn_wts[self.b_key(layer)] = self._initializers['b'](prngkey, (output_dim_i,))
+            # Update prngkey so that each layer is initialised differently:
+            prngkey = jax.random.split(prngkey, num=1).squeeze()
+        return nn_wts
+
+    @staticmethod
+    def _get_ith_layer_dimensions(layer, input_dim, width, output_dim, num_layers):
+        if layer == 0: # Input layer
+            in_dim, out_dim = input_dim, width
+        elif layer < num_layers+1:  # Intermediate layer
+            in_dim = out_dim = width
+        else: # Output layer
+            in_dim, out_dim = width, output_dim
+        return in_dim, out_dim
+
+    @staticmethod
+    def W_key(layer):
+        return f'W_{layer}'
     
     @staticmethod
-    def _create_postprocessing_func(phi_shape):
-        def postprocessing_fun(x):
-            return Jaxtainer.from_array(x, shapes=phi_shape)
-        return postprocessing_fun
-    
-    @staticmethod
-    def _create_nn_func(nn_layers, num_layers):
-        def nn(x, params):
-            for layer in range(num_layers+2):
-                x = nn_layers[layer](x, params[f'W_{layer}'], params[f'b_{layer}'])
-            x = nn_layers[num_layers+2](x)
-            return x
-        return nn
+    def b_key(layer):
+        return f'b_{layer}'
 
 class Preprocessing:
 
@@ -223,8 +388,7 @@ class Preprocessing:
         mean = jnp.mean(data, axis=0, keepdims=True)
         std = jnp.std(data, axis=0, keepdims=True)
 
-        def preprocess_func(x):
-            return (x - mean)/std
+        preprocess_func = lambda x : (x - mean)/std
         
         return cls(preprocess_func)
 
@@ -235,7 +399,52 @@ class Preprocessing:
         max_val = jnp.max(data, axis=0, keepdims=True)
         range_val = max_val - min_val
 
-        def preprocess_func(x):
-            return (x - min_val)/range_val
-        
+        preprocess_func = lambda x : (x - min_val)/range_val
+
         return cls(preprocess_func)
+
+# class LinearRegression(AmortisedApproximation):
+
+#     def __init__(self, distribution, x_dim, prngkey, order=1, preprocessing=None):
+#         lr_func, feature_func, params = self._create_regression_func(distribution, x_dim, order, prngkey)
+#         self.feature_func = jax.vmap(feature_func, in_axes=0)
+#         super().__init__(distribution, phi_func=lr_func, params=params, preprocessing=preprocessing)
+
+#     def _create_regression_func(self, distribution, x_dim, order, prngkey):
+
+#         # if isinstance(order, int):
+#         #     powers = Jaxtainer({key: jnp.arange(0,order) + 1 for key in distribution.phi().keys()}) 
+#         # else:
+#         #     powers = np.arange(0, Jaxtainer(order)) + 1
+
+#         powers = jnp.arange(0,order) + 1 
+
+#         phi_size = distribution.phi().size 
+#         feature_size = x_dim*order + 1
+#         phi_shape = distribution.phi()[0,:].shape
+
+#         def lr_func(x, params):
+#             features = polynomial_features(x)
+#             output = jnp.einsum('ji,j->i', params['A'], features)
+#             phi = Jaxtainer.from_array(output, phi_shape)
+#             return phi
+
+#         def polynomial_features(x):
+#             x_powers = x[:,None]**powers # shape = (x_dim,) 
+#             x_powers = jnp.array([1., *x_powers.flatten()]) 
+#             return x_powers
+
+#         params = {'A': jax.random.normal(key=prngkey, shape=(feature_size, phi_size))}
+
+#         return lr_func, polynomial_features, params
+
+#     def initialise(self, x, phi_0=None):
+#         if phi_0 is None:
+#             phi_0 = self.distribution.phi(x)
+#         num_batch = x.shape[0]
+#         phi_shape = phi_0.shape[1:]
+#         phi_0 = phi_0.flatten(order='F').reshape(num_batch, -1, order='F')
+#         features = self.feature_func(x)
+#         # lstsq returns tuple; only first entry contains least square solution:
+#         lstsq_coeffs = jnp.linalg.lstsq(features, phi_0)[0]
+#         self.params = Jaxtainer.from_array(lstsq_coeffs, shapes=self.params.shape)

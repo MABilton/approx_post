@@ -33,7 +33,7 @@ class MixtureApproximation:
         return coefficients, sample_idx, add_mixture_dim
         
     @staticmethod
-    def _create_pdf_funcs(coefficients, logpdf_components, transform):
+    def _create_pdf_funcs(coefficients, logpdf_components, transform, pdf_min=1e-37):
 
         def pdf(theta, phi):
             coeffs = coefficients(phi)
@@ -41,7 +41,8 @@ class MixtureApproximation:
             return jnp.sum(coeffs*pdf_comps).squeeze()
 
         def logpdf(theta, phi):
-            return jnp.log(pdf(theta, phi))
+            # Add pdf_min to prevent underflow in extreme cases:
+            return jnp.log(pdf(theta, phi) + pdf_min)
 
         # Vectorise logpdf over mixture dimension of theta:
         logpdf_vmap = jax.vmap(logpdf, in_axes=(0,None))
@@ -142,6 +143,10 @@ class MixtureApproximation:
     @staticmethod
     def component_key(idx):
         return f'component_{idx}'
+
+    @property
+    def coefficient_key(self):
+        return self._coeff_key
 
     def phi(self, x=None):
         # Add batch dimension to params (defined in child classes)
@@ -351,13 +356,13 @@ class Different(MixtureApproximation):
         for key, approx in self._components.items():
             phi[key] = approx.params
         # Add batch dimension:
-        phi[self._coeff_key] = self._log_unnorm_coeffs
+        phi[self.coefficient_key] = self._log_unnorm_coeffs
         return Jaxtainer(phi)
 
     def update(self, new_phi):
         for key in self.components.keys():
             self._components[key].update(new_phi[key])
-        self._log_unnorm_coeffs = jnp.atleast_1d(new_phi[self._coeff_key].squeeze())
+        self._log_unnorm_coeffs = jnp.atleast_1d(new_phi[self.coefficient_key].squeeze())
 
 class Identical(MixtureApproximation):
 
@@ -447,10 +452,10 @@ class Identical(MixtureApproximation):
     @property
     def params(self):
         phi = self._noncoeff_phi.copy()
-        phi[self._coeff_key] = self._log_unnorm_coeffs
+        phi[self.coefficient_key] = self._log_unnorm_coeffs
         return Jaxtainer(phi)
 
     def update(self, new_phi):
         for key in self._noncoeff_phi.keys():
             self._noncoeff_phi[key] = new_phi[key]
-        self._log_unnorm_coeffs = jnp.atleast_1d(new_phi[self._coeff_key].squeeze())
+        self._log_unnorm_coeffs = jnp.atleast_1d(new_phi[self.coefficient_key].squeeze())
