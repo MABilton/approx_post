@@ -17,7 +17,7 @@ class AmortisedApproximation:
         self._params_factory = params_factory
         self._preprocessing = preprocessing
         self._componentwise = componentwise
-        self._phifunc_dict = self._create_phifunc_dict(distribution)
+        self._jaxfunc_dict = self._create_jaxfunc_dict(distribution)
         self._params = self._create_params(distribution, prngkey)
 
     #
@@ -41,19 +41,31 @@ class AmortisedApproximation:
         return self._componentwise if isinstance(self.distribution, mixture.MixtureApproximation) else False
 
     #
-    #   Phi Function Construction-Related Methods
+    #   Function Construction-Related Methods
     #
 
-    def _create_phifunc_dict(self, distribution):
+    def _create_jaxfunc_dict(self, distribution):
         phi_func = self._create_phi_func(distribution)
-        phifunc_dict = {'phi': phi_func, 
-                        'phi_del_params': jax.jacfwd(phi_func, argnums=1)}
-        for key, func in phifunc_dict.items():
-            phifunc_dict[key] = jax.vmap(func, in_axes=(0,None))
-        return phifunc_dict
+        logpdf_funcs = self._create_logpdf_funcs(distribution, phi_func)
+        jaxfunc_dict = {'phi': phi_func, 
+                        'phi_del_x': jax.jacfwd(phi_func, argnums=0),
+                        'phi_del_params': jax.jacfwd(phi_func, argnums=1),
+                        'logpdf_del_x': jax.jacfwd(logpdf_funcs[0], argnums=1),
+                        'logpdf_epsilon_del_x': jax.jacfwd(logpdf_funcs[1], argnums=1)}
+        for key, func in jaxfunc_dict.items():
+            if 'logpdf_epsilon' in key:
+                # Vectorise over batch_dim of x, and over sample dimension of epsilon:
+                jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None,None)), in_axes=(None,0,None))
+            elif 'logpdf' in key:
+                # Vectorise over batch_dim of theta and x, and over sample dimension of theta:
+                jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None,None)), in_axes=(0,0,None))
+            else:
+                # Vectorise over batch_dim of x:
+                jaxfunc_dict[key] = jax.vmap(func, in_axes=(0,None))
+        return jaxfunc_dict
 
     def _create_phi_func(self, distribution):
-        # Create phi function for each lsmixture component:
+        # Create phi function for each mixture component:
         if self.is_componentwise:
             # If mixture components are identical:
             if self.is_identical_mixture:
@@ -114,6 +126,17 @@ class AmortisedApproximation:
 
         return phi_func
 
+    @staticmethod
+    def _create_logpdf_funcs(distribution, phi_func):
+        def logpdf(theta, x, params):
+            phi = phi_func(x, params)
+            return distribution.get_function('logpdf')(theta, phi)
+        def logpdf_epsilon(epsilon, x, params):
+            phi = phi_func(x, params)
+            theta = distribution.get_function('transform')(epsilon, phi)
+            return distribution.get_function('logpdf')(theta, phi)
+        return logpdf, logpdf_epsilon
+
     #
     #   Parameter Methods
     #
@@ -147,14 +170,16 @@ class AmortisedApproximation:
 
     def phi(self, x):
         x = self.preprocess(x)
-        phi = self._phifunc_dict['phi'](x, self.params)
-        return phi
+        return self._jaxfunc_dict['phi'](x, self.params)
     
     def phi_del_params(self, x):
         x = self.preprocess(x)
-        phi_del_params = self._phifunc_dict['phi_del_params'](x, self.params)
-        return phi_del_params
+        return self._jaxfunc_dict['phi_del_params'](x, self.params)
     
+    def phi_del_x(self, x):
+        x = self.preprocess(x)
+        return self._jaxfunc_dict['phi_del_x'](x, self.params)
+
     def _get_phi(self, phi, x):
         if (phi is None) and (x is None):
             raise ValueError('Must specify either phi or x.')
@@ -195,6 +220,32 @@ class AmortisedApproximation:
     def logpdf_del_2(self, theta, phi=None, x=None):
         phi = self._get_phi(phi, x)
         return self.distribution.logpdf_del_2(theta, phi)
+
+    def logpdf_del_x(self, theta, x):
+        x = self.preprocess(x)
+        theta = self._reshape_input(theta, ndim=3, num_batch=x.shape[0])
+        return self._jaxfunc_dict['logpdf_del_x'](theta, x, self.params)
+
+    def logpdf_epsilon_del_x(self, epsilon, x):
+        x = self.preprocess(x) 
+        epsilon = self._reshape_input(epsilon, ndim=2)
+        return self._jaxfunc_dict['logpdf_epsilon_del_x'](epsilon, x, self.params)
+
+    @staticmethod
+    def _reshape_input(val, ndim, num_batch=None):
+        val = jnp.atleast_1d(val)
+        val_original_shape = val.shape
+        for _ in range(ndim - val.ndim):
+            val = val[None,:]
+        if num_batch is not None:
+            if (val.shape[0] != num_batch) and (val.shape[0] == 1):
+                val = jnp.broadcast_to(val, shape=(num_batch, *val.shape[1:]))
+            elif val.shape[0] != num_batch:
+                num_samples = val.shape[1]
+                raise ValueError('Input theta has unexpected shape. Expected to broadcast theta into shape '
+                                f'(num_batch, num_samples, -1) = ({num_batch}, {num_samples}, -1). '
+                                f'Instead, theta was broadcasted from {val_original_shape} into {val.shape}.')
+        return val
 
     #
     #   Mixture Distribution Methods
@@ -255,7 +306,7 @@ class AmortisedApproximation:
             new_distribution.add_component(component)
         
         # Create new functions and params:
-        new_phifunc_dict = self._create_phifunc_dict(new_distribution)
+        new_jaxfunc_dict = self._create_jaxfunc_dict(new_distribution)
         new_params = self._create_params(new_distribution, prngkey)
         for key, val in self.params.items():
             if key != self.distribution.coefficient_key:
@@ -264,7 +315,7 @@ class AmortisedApproximation:
         # If no errors raised, can update attributes:
         self._distribution = new_distribution
         self._params = new_params
-        self._phifunc_dict = new_phifunc_dict
+        self._jaxfunc_dict = new_jaxfunc_dict
 
 
 class NeuralNetwork(AmortisedApproximation):
@@ -300,6 +351,8 @@ class NeuralNetwork(AmortisedApproximation):
 
         # Function which calls nn layers:
         def nn_func(x, wts):
+            if x.shape[0] != input_dim:
+                raise ValueError(f'Unexpected x dimension. Expected x.ndim = {input_dim}; instead, x.ndim = {x.shape[0]}.')
             for layer in range(num_layers+2):
                 x = nn_layers[layer](x, wts[self.W_key(layer)], wts[self.b_key(layer)])
             phi = nn_layers[num_layers+2](x)

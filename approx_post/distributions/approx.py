@@ -163,6 +163,14 @@ class ApproximateDistribution:
     def update(self, new_phi):
         self._phi = Jaxtainer(new_phi)
 
+    def get_function(self, name):
+        try:
+            func = self._func_dict[name]
+        except KeyError:
+            raise KeyError(f"No such function called '{name}'; " 
+                           f"valid function names are: {' ,'.join(list(self._func_dict.keys()))}")
+        return func
+
     #
     #   Save and Load Methods
     #

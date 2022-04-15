@@ -1,1 +1,2 @@
-from . import amortised, approx, joint, mixture
+__all__ = ['amortised', 'approx', 'joint', 'mixture']
+from . import *

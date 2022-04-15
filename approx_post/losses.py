@@ -17,24 +17,20 @@ class Loss:
             loss_del_params = loss_del_phi
 
         else:
-            num_batch = x.shape[0]
-            # [0,:] to remove batch dimension:
+            num_batch = x.shape[0] # [0,:] to remove batch dimension:
             phi_size = loss_del_phi[0,:].size
             phi_sizes_arraytainer = loss_del_phi[0,:].sizes
             params_shape = approxdist.params.shape
 
-            loss_del_phi = loss_del_phi.flatten(order='F').reshape(num_batch, phi_size, order='F')
-            # shape = (num_batch, phi_dim)
+            loss_del_phi = loss_del_phi.flatten(order='F').reshape(num_batch, phi_size, order='F') # shape = (num_batch, phi_dim)
 
             phi_del_params = approxdist.phi_del_params(x)
 
             phi_del_params = \
-            self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape) 
-            # shape = (num_batch, phi_dims, param_size)
+            self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape) # shape = (num_batch, phi_dims, param_size)
 
-            loss_del_params = jnp.einsum('ai,aij->aj', loss_del_phi, phi_del_params) 
+            loss_del_params = jnp.einsum('ai,aij->aj', loss_del_phi, phi_del_params) # shape = (num_batch, param_ndim)
 
-            # shape = (num_batch, param_ndim)
             loss_del_params = Jaxtainer.from_array(loss_del_params, shapes=(num_batch, params_shape), order='F')
 
         return loss_del_params

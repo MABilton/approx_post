@@ -10,6 +10,7 @@ class Optimiser:
         self._initialise_loop_vars()
         self._initialise_optim_params()
 
+        loss_history = []
         while self._loop_flag:
 
             loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
@@ -29,8 +30,11 @@ class Optimiser:
                 best_params = new_params
 
             self._check_loop_condition(max_iter)
+            loss_history.append(loss)
         
         approx.update(best_params)
+
+        return loss_history
 
     def _initialise_loop_vars(self):
         self._loop_flag = True
