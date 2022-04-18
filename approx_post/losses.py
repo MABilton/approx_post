@@ -8,7 +8,7 @@ class Loss:
     #   Chain rule to compute loss del params
     #
 
-    def _compute_loss_del_params(self, loss_del_phi, x, approxdist):
+    def _compute_loss_del_params(self, loss_del_phi, x, d, approxdist):
 
         # loss_del_phi.shape = (num_batch, phi_shape)
         # x.shape = (num_batch, x_dim)
@@ -24,7 +24,7 @@ class Loss:
 
             loss_del_phi = loss_del_phi.flatten(order='F').reshape(num_batch, phi_size, order='F') # shape = (num_batch, phi_dim)
 
-            phi_del_params = approxdist.phi_del_params(x)
+            phi_del_params = approxdist.phi_del_params(x, d)
 
             phi_del_params = \
             self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape) # shape = (num_batch, phi_dims, param_size)
@@ -141,21 +141,21 @@ class ELBO(Loss):
         self.joint = jointdist
         self.use_reparameterisation = use_reparameterisation
     
-    def eval(self, approx, x, prngkey, num_samples=None):
+    def eval(self, approx, x, prngkey, d=None, num_samples=None):
         
-        phi = approx.phi(x)
+        phi = approx.phi(x, d)
 
         if self.use_reparameterisation:
-            loss, loss_del_phi = self._eval_elbo_reparameterisation(approx, phi, x, num_samples, prngkey)
+            loss, loss_del_phi = self._eval_elbo_reparameterisation(approx, phi, x, d, num_samples, prngkey)
         else:
-            loss, loss_del_phi = self._eval_elbo_cv(approx, phi, x, num_samples, prngkey)
+            loss, loss_del_phi = self._eval_elbo_cv(approx, phi, x, d, num_samples, prngkey)
 
-        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, approx)
+        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, d, approx)
         loss, loss_del_params = self._avg_over_batch_dim(loss, loss_del_params)
 
         return loss, loss_del_params
 
-    def _eval_elbo_reparameterisation(self, approx, phi, x, num_samples, prngkey):
+    def _eval_elbo_reparameterisation(self, approx, phi, x, d, num_samples, prngkey):
 
         if num_samples is None:
             num_samples = self._default_num_samples['reparam']
@@ -164,11 +164,11 @@ class ELBO(Loss):
         theta = approx.transform(epsilon, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
         approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
-        joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)
+        joint_lp = self.joint.logpdf(theta, x, d) # shape = (num_batch, num_samples)
         loss_samples = joint_lp - approx_lp # shape = (num_batch, num_samples)
 
         transform_del_phi = approx.transform_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, theta_dim, phi_dim)
-        joint_del_1 = self.joint.logpdf_del_1(theta, x) # shape = (num_batch, num_samples, theta_dim)
+        joint_del_1 = self.joint.logpdf_del_1(theta, x, d) # shape = (num_batch, num_samples, theta_dim)
         joint_del_phi = np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
         approx_del_1 = approx.logpdf_del_1(theta, phi=phi) # shape = (num_batch, num_samples, theta_dim)
         approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
@@ -180,7 +180,7 @@ class ELBO(Loss):
 
         return loss, loss_del_phi
         
-    def _eval_elbo_cv(self, approx, phi, x, num_samples, prngkey):
+    def _eval_elbo_cv(self, approx, phi, x, d, num_samples, prngkey):
 
         if num_samples is None:
             num_samples = self._default_num_samples['cv']
@@ -188,7 +188,7 @@ class ELBO(Loss):
         theta = approx.sample(num_samples, prngkey, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
         approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
-        joint_lp = self.joint.logpdf(theta, x) # shape = (num_batch, num_samples)
+        joint_lp = self.joint.logpdf(theta, x, d) # shape = (num_batch, num_samples)
         approx_del_phi = approx.logpdf_del_2(theta, phi=phi) # shape = (num_batch, num_samples, phi_dim)
 
         loss_samples = (joint_lp - approx_lp) # shape = (num_batch, num_samples)
@@ -211,21 +211,21 @@ class SELBO(Loss):
         self.joint = jointdist
         self.use_reparameterisation = use_reparameterisation
 
-    def eval(self, approx, x, prngkey, num_samples=None):
+    def eval(self, approx, x, prngkey, d=None, num_samples=None):
 
-        phi = approx.phi(x)
+        phi = approx.phi(x, d)
 
         if self.use_reparameterisation:
-            loss, loss_del_phi = self._eval_selbo_reparameterisation(approx, phi, x, num_samples, prngkey)
+            loss, loss_del_phi = self._eval_selbo_reparameterisation(approx, phi, x, d, num_samples, prngkey)
         else:
-            loss, loss_del_phi = self._eval_selbo_cv(approx, phi, x, num_samples, prngkey)
+            loss, loss_del_phi = self._eval_selbo_cv(approx, phi, x, d, num_samples, prngkey)
 
-        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, approx)
+        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, d, approx)
         loss, loss_del_params = self._avg_over_batch_dim(loss, loss_del_params)
 
         return loss, loss_del_params
 
-    def _eval_selbo_reparameterisation(self, approx, phi, x, num_samples, prngkey):
+    def _eval_selbo_reparameterisation(self, approx, phi, x, d, num_samples, prngkey):
         
         if num_samples is None:
             num_samples = self._default_num_samples['reparam']
@@ -234,11 +234,11 @@ class SELBO(Loss):
         theta = approx.transform(epsilon, phi=phi) # shape = (num_batch, num_samples, num_mixture, dim_theta)
 
         approx_lp = self._compute_component_logpdf(approx.logpdf, theta, phi=phi) # shape = (num_batch, num_samples, num_mixture)
-        joint_lp = self._compute_component_logpdf(self.joint.logpdf, theta, x=x)  # shape = (num_batch, num_samples, num_mixture)
+        joint_lp = self._compute_component_logpdf(self.joint.logpdf, theta, x=x, d=d)  # shape = (num_batch, num_samples, num_mixture)
         loss_components = jnp.mean(joint_lp - approx_lp, axis=1) # shape = (num_batch, num_mixture)
 
         transform_del_phi = approx.transform_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, num_mixture, theta_dim, phi_dim)
-        joint_del_1 = self._compute_component_logpdf(self.joint.logpdf_del_1, theta, x=x) # shape = (num_batch, num_samples, num_mixture, theta_dim)
+        joint_del_1 = self._compute_component_logpdf(self.joint.logpdf_del_1, theta, x=x, d=d) # shape = (num_batch, num_samples, num_mixture, theta_dim)
         joint_del_phi = np.einsum('abmi...,abmi->abm...', transform_del_phi, joint_del_1) # shape = (num_batch, num_samples, num_mixture, phi_shape)
         approx_del_phi = approx.logpdf_epsilon_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, num_mixture, phi_shape)
         elbo_grad_components = np.mean(joint_del_phi - approx_del_phi, axis=1) # shape = (num_batch, num_mixture, phi_shape)
@@ -252,11 +252,11 @@ class SELBO(Loss):
 
         return loss, loss_del_phi
 
-    def _compute_component_logpdf(self, logpdf_func, theta, **phi_or_x):
+    def _compute_component_logpdf(self, logpdf_func, theta, **phi_or_x_and_d):
         num_batch, num_components = theta.shape[0], theta.shape[2]
         theta_reshaped = self._reshape_theta(theta) # shape = (num_batch*num_mixture, num_samples, theta_dim)
-        phi_or_x_tiled = self._tile_phi_or_x(phi_or_x, num_components) # shape = (num_batch*num_mixture, x_dim/phi_dim)
-        logpdf = logpdf_func(theta_reshaped, **phi_or_x_tiled) # shape = (num_batch*num_mixture, num_samples, *)
+        phi_or_x_and_d_tiled = self._tile_values(phi_or_x_and_d, num_components) # shape = (num_batch*num_mixture, x_dim/phi_dim)
+        logpdf = logpdf_func(theta_reshaped, **phi_or_x_and_d_tiled) # shape = (num_batch*num_mixture, num_samples, *)
         return self._split_logpdf_dim(logpdf, num_batch, num_components) # shape = (num_batch, num_samples, num_mixture, *)
 
     @staticmethod
@@ -266,7 +266,7 @@ class SELBO(Loss):
         return theta.reshape(new_theta_shape) # shape = (num_batch*num_mixture, num_samples, theta_dim)
 
     @staticmethod
-    def _tile_phi_or_x(phi_or_x, num_components):
+    def _tile_values(phi_or_x, num_components):
 
         key = list(phi_or_x.keys())[0]
 
@@ -309,7 +309,7 @@ class ForwardKL(Loss):
             result = unnorm_wts*samples/unnorm_wts_sum # shape = (num_batch, num_samples)
         return result
 
-    def eval(self, approx, x, prngkey=None, num_samples=None):
+    def eval(self, approx, x, prngkey=None, d=None, num_samples=None):
 
         if all(not hasattr(self, attr) for attr in ['joint', 'posterior_samples']):
             raise ValueError('Must specify either jointdist or posterior_samples.')
@@ -324,11 +324,11 @@ class ForwardKL(Loss):
                 raise ValueError('Must specify prngkey to use reparameterisation or control variate methods.')
 
             if self.use_reparameterisation:
-                loss, loss_del_phi = self._eval_reparameterisation(approx, phi, x, num_samples, prngkey)
+                loss, loss_del_phi = self._eval_reparameterisation(approx, phi, x, d, num_samples, prngkey)
             else:
-                loss, loss_del_phi = self._eval_controlvariates(approx, phi, x, num_samples, prngkey)
+                loss, loss_del_phi = self._eval_controlvariates(approx, phi, x, d, num_samples, prngkey)
             
-        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, approx)
+        loss_del_params = self._compute_loss_del_params(loss_del_phi, x, d, approx)
 
         loss, loss_del_params = self._avg_over_batch_dim(loss, loss_del_params)
 
@@ -341,7 +341,7 @@ class ForwardKL(Loss):
         grad = -1*np.mean(approx_del_phi, axis=1)
         return loss, grad
 
-    def _eval_reparameterisation(self, approx, phi, x, num_samples, prngkey):
+    def _eval_reparameterisation(self, approx, phi, x, d, num_samples, prngkey):
         
         if num_samples is None:
             num_samples = self._default_num_samples['reparam']
@@ -369,7 +369,7 @@ class ForwardKL(Loss):
 
         return loss, loss_del_phi
 
-    def _eval_controlvariates(self, approx, phi, x, num_samples, prngkey):
+    def _eval_controlvariates(self, approx, phi, x, d, num_samples, prngkey):
         
         if num_samples is None:
             num_samples = self._default_num_samples['cv']
@@ -400,9 +400,9 @@ class MSE(Loss):
         self.target = target
 
     # Need kwargs to 'absorb' unnecessary arguments passed by optimiser:
-    def eval(self, amortised, x, **kwargs):
+    def eval(self, amortised, x, d=None, **kwargs):
 
-        phi = amortised.phi(x)
+        phi = amortised.phi(x, d)
         if self.target is None:
             target_phi = amortised.distribution.phi()
         else:
@@ -411,7 +411,7 @@ class MSE(Loss):
         phi_diff = phi - target_phi
         mse = (phi_diff**2).sum_all()
         mse_del_phi = 2*phi_diff[:,None,:] # shape = (num_batch, 1, phi_shape)
-        mse_del_params = self._compute_loss_del_params(mse_del_phi, x, amortised) # shape = (num_batch, param_shape)
+        mse_del_params = self._compute_loss_del_params(mse_del_phi, x, d, amortised) # shape = (num_batch, param_shape)
         mse_del_params = np.mean(mse_del_params, axis=0) # shape = (param_shape,)
 
         return mse, mse_del_params
