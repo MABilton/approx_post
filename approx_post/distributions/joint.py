@@ -9,14 +9,27 @@ class JointDistribution:
         if logpdf_del_1 is not None:
             self._func_dict['logpdf_del_1'] = logpdf_del_1
 
-    def logpdf(self, theta, x):
+    def logpdf(self, theta, x, d=None):
         num_batch, num_samples = theta.shape[0:2]
-        logpdf = self._func_dict['logpdf'](theta, x)
+        x, d = self._preprocess_inputs(x, d, num_batch)
+        logpdf = self._func_dict['logpdf'](theta, x, d)
         return logpdf.reshape(num_batch, num_samples)
     
-    def logpdf_del_1(self, theta, x):
+    def logpdf_del_1(self, theta, x, d=None):
         num_batch, num_samples = theta.shape[0:2]
-        return self._func_dict['logpdf_del_1'](theta, x).reshape(num_batch, num_samples, -1)
+        x, d = self._preprocess_inputs(x, d, num_batch)
+        return self._func_dict['logpdf_del_1'](theta, x, d).reshape(num_batch, num_samples, -1)
+
+    @staticmethod
+    def _preprocess_inputs(x, d, num_batch):
+        for _ in range(2-x.ndim):
+            x = x[None,:] 
+        x = jnp.broadcast_to(x, shape=(num_batch, *x.shape[1:]))
+        if d is not None:
+            for _ in range(2-d.ndim):
+                d = d[None,:]
+            d = jnp.broadcast_to(d, shape=(num_batch, *d.shape[1:]))
+        return x, d
 
 class ModelPlusGaussian(JointDistribution):
     
@@ -37,13 +50,13 @@ class ModelPlusGaussian(JointDistribution):
 
     def _create_model_funcs(self):
 
-        def wrapped_model(theta, x):
-            output = jnp.array(self.model(theta, x))
+        def wrapped_model(theta, d):
+            output = jnp.array(self.model(theta, d))
             num_batch, num_samples = theta.shape[0:2]
             return output.reshape(num_batch, num_samples, self.x_dim)
         
-        def wrapped_model_grad(theta, x):
-            output = jnp.array(self.model_grad(theta, x))
+        def wrapped_model_grad(theta, d):
+            output = jnp.array(self.model_grad(theta, d))
             num_batch, num_samples = theta.shape[0:2]
             return output.reshape(num_batch, num_samples, self.x_dim, self.theta_dim)
 
@@ -54,7 +67,7 @@ class ModelPlusGaussian(JointDistribution):
         # Vectorisng over sample dimension of mean allows for correct broadcasting:
         mvn_vmap_mean = jax.vmap(mvn.logpdf, in_axes=(None,1,None), out_axes=1)
 
-        def logpdf(theta, x):
+        def logpdf(theta, x, d):
             # theta.shape = (num_batch, num_samples, theta_dim)
             # x.shape = (num_batch, x_dim)
             prior_logpdf = mvn.logpdf(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples)
@@ -74,7 +87,7 @@ class ModelPlusGaussian(JointDistribution):
         mvn_del_mean = jax.jacfwd(mvn.logpdf, argnums=1)
         mvn_del_mean_vmap = jax.vmap(jax.vmap(mvn_del_mean, in_axes=(None,0,None)), in_axes=(0,0,None))
 
-        def logpdf_del_1(theta, x):
+        def logpdf_del_1(theta, x, d):
             # theta.shape = (num_batch, num_samples, theta_dim)
             # x.shape = (num_batch, x_dim)
             prior_del_1 = mvn_del_theta_vmap(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples, theta_dim)
@@ -96,7 +109,7 @@ class PriorAndLikelihood(JointDistribution):
 
     def _create_logpdf(self):
         
-        def logpdf(theta, x):
+        def logpdf(theta, x, d):
             num_batch, num_samples = theta.shape[0:2]
             return self.prior(theta).reshape(num_batch, num_samples) \
                     + self.likelihood(theta, x).reshape(num_batch, num_samples)
@@ -105,7 +118,7 @@ class PriorAndLikelihood(JointDistribution):
 
     def _create_logpdf_del_1(self):
 
-        def logpdf_del_1(theta, x):
+        def logpdf_del_1(theta, x, d):
             num_batch, num_samples = theta.shape[0:2]
             return self.prior_del_1(theta).reshape(num_batch, num_samples, -1) \
                     + self.likelihood_del_1(theta, x).reshape(num_batch, num_samples, -1)

@@ -49,19 +49,21 @@ class AmortisedApproximation:
         logpdf_funcs = self._create_logpdf_funcs(distribution, phi_func)
         jaxfunc_dict = {'phi': phi_func, 
                         'phi_del_x': jax.jacfwd(phi_func, argnums=0),
-                        'phi_del_params': jax.jacfwd(phi_func, argnums=1),
                         'logpdf_del_x': jax.jacfwd(logpdf_funcs[0], argnums=1),
-                        'logpdf_epsilon_del_x': jax.jacfwd(logpdf_funcs[1], argnums=1)}
+                        'logpdf_epsilon_del_x': jax.jacfwd(logpdf_funcs[1], argnums=1),
+                        'logpdf_del_d': jax.jacfwd(logpdf_funcs[0], argnums=2),
+                        'logpdf_epsilon_del_d': jax.jacfwd(logpdf_funcs[1], argnums=2),
+                        'phi_del_params': jax.jacfwd(phi_func, argnums=2),}
         for key, func in jaxfunc_dict.items():
             if 'logpdf_epsilon' in key:
-                # Vectorise over batch_dim of x, and over sample dimension of epsilon:
-                jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None,None)), in_axes=(None,0,None))
+                # Vectorise over batch_dim of x and d, and over sample dimension of epsilon:
+                jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None,None,None)), in_axes=(None,0,0,None))
             elif 'logpdf' in key:
-                # Vectorise over batch_dim of theta and x, and over sample dimension of theta:
-                jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None,None)), in_axes=(0,0,None))
+                # Vectorise over batch_dim of theta, x, and d, and over sample dimension of theta:
+                jaxfunc_dict[key] = jax.vmap(jax.vmap(func, in_axes=(0,None,None,None)), in_axes=(0,0,0,None))
             else:
-                # Vectorise over batch_dim of x:
-                jaxfunc_dict[key] = jax.vmap(func, in_axes=(0,None))
+                # Vectorise over batch_dim of x and d:
+                jaxfunc_dict[key] = jax.vmap(func, in_axes=(0,0,None))
         return jaxfunc_dict
 
     def _create_phi_func(self, distribution):
@@ -128,11 +130,11 @@ class AmortisedApproximation:
 
     @staticmethod
     def _create_logpdf_funcs(distribution, phi_func):
-        def logpdf(theta, x, params):
-            phi = phi_func(x, params)
+        def logpdf(theta, x, d, params):
+            phi = phi_func(x, d, params)
             return distribution.get_function('logpdf')(theta, phi)
-        def logpdf_epsilon(epsilon, x, params):
-            phi = phi_func(x, params)
+        def logpdf_epsilon(epsilon, x, d, params):
+            phi = phi_func(x, d, params)
             theta = distribution.get_function('transform')(epsilon, phi)
             return distribution.get_function('logpdf')(theta, phi)
         return logpdf, logpdf_epsilon
@@ -161,91 +163,112 @@ class AmortisedApproximation:
     #   Phi Methods
     #
 
-    def preprocess(self, x):
-        for _ in range(2-x.ndim):
-            x = x[None,:]
+    def preprocess_inputs(self, x, d=None):
+        x = self._reshape_input(x, ndim=2, num_batch=None)
+        d = self._reshape_input(d, ndim=2, num_batch=None)
+        if d is None:
+            num_batch = x.shape[0]
+        else:
+            num_batch = max(x.shape[0], d.shape[0]) 
+        x = self._reshape_input(x, ndim=2, num_batch=num_batch)
+        d = self._reshape_input(d, ndim=2, num_batch=num_batch)
         if self._preprocessing is not None:
-            x = self._preprocessing(x)
-        return x
+            x, d = self._preprocessing(x, d)
+        return x, d
 
-    def phi(self, x):
-        x = self.preprocess(x)
-        return self._jaxfunc_dict['phi'](x, self.params)
+    def phi(self, x, d=None):
+        x, d = self.preprocess_inputs(x, d)
+        return self._jaxfunc_dict['phi'](x, d, self.params)
     
-    def phi_del_params(self, x):
-        x = self.preprocess(x)
-        return self._jaxfunc_dict['phi_del_params'](x, self.params)
+    def phi_del_params(self, x, d=None):
+        x, d = self.preprocess_inputs(x, d)
+        return self._jaxfunc_dict['phi_del_params'](x, d, self.params)
     
-    def phi_del_x(self, x):
-        x = self.preprocess(x)
-        return self._jaxfunc_dict['phi_del_x'](x, self.params)
+    def phi_del_x(self, x, d=None):
+        x, d = self.preprocess_inputs(x, d)
+        return self._jaxfunc_dict['phi_del_x'](x, d, self.params)
 
-    def _get_phi(self, phi, x):
+    def _get_phi(self, phi, x, d):
         if (phi is None) and (x is None):
             raise ValueError('Must specify either phi or x.')
         if (phi is not None) and (not isinstance(phi, Jaxtainer)):
             raise TypeError('Provided phi value is not a Jaxtainer. Did you mean to specify x ' 
                             'instead of phi? If so, explicitly use the "x" keyword argument.')
         if phi is None:
-            phi = self.phi(x)
+            phi = self.phi(x, d)
         return phi
     
     #
     #   General Distribution Methods
     #
 
-    def logpdf(self, theta, phi=None, x=None):
-        phi = self._get_phi(phi, x)
+    def logpdf(self, theta, phi=None, x=None, d=None):
+        phi = self._get_phi(phi, x, d)
         return self.distribution.logpdf(theta, phi)
     
-    def sample(self, num_samples, prngkey, phi=None, x=None):
-        phi = self._get_phi(phi, x)
+    def sample(self, num_samples, prngkey, phi=None, x=None, d=None):
+        phi = self._get_phi(phi, x, d)
         return self.distribution.sample(num_samples, prngkey, phi=phi)
 
     def sample_base(self, num_samples, prngkey):
         return self.distribution.sample_base(num_samples, prngkey)
 
-    def transform(self, epsilon, phi=None, x=None):
-        phi = self._get_phi(phi, x)
+    def transform(self, epsilon, phi=None, x=None, d=None):
+        phi = self._get_phi(phi, x, d)
         return self.distribution.transform(epsilon, phi)
     
-    def transform_del_2(self, epsilon, phi=None, x=None):
-        phi = self._get_phi(phi, x)
+    def transform_del_2(self, epsilon, phi=None, x=None, d=None):
+        phi = self._get_phi(phi, x, d)
         return self.distribution.transform_del_2(epsilon, phi)
 
-    def logpdf_del_1(self, theta, phi=None, x=None):
-        phi = self._get_phi(phi, x)
+    def logpdf_del_1(self, theta, phi=None, x=None, d=None):
+        phi = self._get_phi(phi, x, d)
         return self.distribution.logpdf_del_1(theta, phi)
     
-    def logpdf_del_2(self, theta, phi=None, x=None):
-        phi = self._get_phi(phi, x)
+    def logpdf_del_2(self, theta, phi=None, x=None, d=None):
+        phi = self._get_phi(phi, x, d)
         return self.distribution.logpdf_del_2(theta, phi)
-
-    def logpdf_del_x(self, theta, x):
-        x = self.preprocess(x)
-        theta = self._reshape_input(theta, ndim=3, num_batch=x.shape[0])
-        return self._jaxfunc_dict['logpdf_del_x'](theta, x, self.params)
-
-    def logpdf_epsilon_del_x(self, epsilon, x):
-        x = self.preprocess(x) 
-        epsilon = self._reshape_input(epsilon, ndim=2)
-        return self._jaxfunc_dict['logpdf_epsilon_del_x'](epsilon, x, self.params)
 
     @staticmethod
     def _reshape_input(val, ndim, num_batch=None):
-        val = jnp.atleast_1d(val)
-        val_original_shape = val.shape
-        for _ in range(ndim - val.ndim):
-            val = val[None,:]
-        if num_batch is not None:
-            if (val.shape[0] != num_batch) and (val.shape[0] == 1):
-                val = jnp.broadcast_to(val, shape=(num_batch, *val.shape[1:]))
-            elif val.shape[0] != num_batch:
-                num_samples = val.shape[1]
-                raise ValueError('Input theta has unexpected shape. Expected to broadcast theta into shape '
-                                f'(num_batch, num_samples, -1) = ({num_batch}, {num_samples}, -1). '
-                                f'Instead, theta was broadcasted from {val_original_shape} into {val.shape}.')
+        if val is not None:
+            val = jnp.atleast_1d(val)
+            val_original_shape = val.shape
+            for _ in range(ndim - val.ndim):
+                val = val[None,:]
+            if num_batch is not None:
+                if (val.shape[0] != num_batch) and (val.shape[0] == 1):
+                    val = jnp.broadcast_to(val, shape=(num_batch, *val.shape[1:]))
+                elif val.shape[0] != num_batch:
+                    num_samples = val.shape[1]
+                    raise ValueError('Input theta has unexpected shape. Expected to broadcast theta into shape '
+                                    f'(num_batch, num_samples, -1) = ({num_batch}, {num_samples}, -1). '
+                                    f'Instead, theta was broadcasted from {val_original_shape} into {val.shape}.')
         return val
+
+    #
+    #   Derivatives of Logpdf wrt Obs and Design
+    #
+
+    def logpdf_del_x(self, theta, x, d=None):
+        x, d = self.preprocess_inputs(x, d)
+        theta = self._reshape_input(theta, ndim=3, num_batch=x.shape[0])
+        return self._jaxfunc_dict['logpdf_del_x'](theta, x, d, self.params)
+
+    def logpdf_epsilon_del_x(self, epsilon, x, d=None):
+        x, d = self.preprocess_inputs(x, d) 
+        epsilon = self._reshape_input(epsilon, ndim=2)
+        return self._jaxfunc_dict['logpdf_epsilon_del_x'](epsilon, x, d, self.params)
+
+    def logpdf_del_d(self, theta, x, d):
+        x, d = self.preprocess_inputs(x, d)
+        theta = self._reshape_input(theta, ndim=3, num_batch=x.shape[0])
+        return self._jaxfunc_dict['logpdf_del_d'](theta, x, d, self.params)
+
+    def logpdf_epsilon_del_d(self, epsilon, x, d):
+        x, d = self.preprocess_inputs(x, d) 
+        epsilon = self._reshape_input(epsilon, ndim=2)
+        return self._jaxfunc_dict['logpdf_epsilon_del_d'](epsilon, x, d, self.params)
 
     #
     #   Mixture Distribution Methods
@@ -257,34 +280,34 @@ class AmortisedApproximation:
             raise TypeError('Amortised distribution is not a mixture so it does, '
                             f'not have a {caller_func_name} method.')
 
-    def coefficients(self, phi=None, x=None):
+    def coefficients(self, phi=None, x=None, d=None):
         self._check_if_mixture(inspect.currentframe())
-        phi = self._get_phi(phi, x)
+        phi = self._get_phi(phi, x, d)
         return self.distribution.coefficients(phi)
 
-    def coefficients_del_phi(self, phi=None, x=None):
+    def coefficients_del_phi(self, phi=None, x=None, d=None):
         self._check_if_mixture(inspect.currentframe())
-        phi = self._get_phi(phi, x)
+        phi = self._get_phi(phi, x, d)
         return self.distribution.coefficients_del_phi(phi)
 
-    def pdf(self, theta, phi=None, x=None):
+    def pdf(self, theta, phi=None, x=None, d=None):
         self._check_if_mixture(inspect.currentframe())
-        phi = self._get_phi(phi, x)
+        phi = self._get_phi(phi, x, d)
         return self.distribution.pdf(theta, phi)
 
-    def logpdf_epsilon(self, epsilon, phi=None, x=None):
+    def logpdf_epsilon(self, epsilon, phi=None, x=None, d=None):
         self._check_if_mixture(inspect.currentframe())
-        phi = self._get_phi(phi, x)
+        phi = self._get_phi(phi, x, d)
         return self.distribution.logpdf_epsilon(epsilon, phi)
 
-    def logpdf_epsilon_del_2(self, epsilon, phi=None, x=None):
+    def logpdf_epsilon_del_2(self, epsilon, phi=None, x=None, d=None):
         self._check_if_mixture(inspect.currentframe())
-        phi = self._get_phi(phi, x)
+        phi = self._get_phi(phi, x, d)
         return self.distribution.logpdf_epsilon_del_2(epsilon, phi)
 
-    def sample_idx(self, num_samples, prngkey, phi=None, x=None):
+    def sample_idx(self, num_samples, prngkey, phi=None, x=None, d=None):
         self._check_if_mixture(inspect.currentframe())
-        phi = self._get_phi(phi, x)
+        phi = self._get_phi(phi, x, d)
         return self.distribution.sample_idx(num_samples, prngkey, phi)
 
     def add_component(self, component=None, prngkey=None):
@@ -317,19 +340,18 @@ class AmortisedApproximation:
         self._params = new_params
         self._jaxfunc_dict = new_jaxfunc_dict
 
-
 class NeuralNetwork(AmortisedApproximation):
 
     _activations = {'relu': jnn.relu, 'sigmoid': jnn.sigmoid}
     _initializers = {'W': jnn.initializers.he_normal(), 'b': jnn.initializers.zeros}
 
-    def __init__(self, distribution, x_dim, prngkey, num_layers=5, width=5, activation='relu', componentwise=True, preprocessing=None):
+    def __init__(self, distribution, x_dim, prngkey, d_dim=0, num_layers=5, width=5, activation='relu', componentwise=True, preprocessing=None):
         
         if (not isinstance(activation, str)) and (activation.lower() not in self._activations):
             raise ValueError(f'Invalid value specified for activation; valid options are: {", ".join(self._activations.keys())}')
 
-        nn_func_factory = lambda dist_params: self._nn_func_factory(dist_params, x_dim, num_layers, width, activation)
-        wts_factory = lambda dist_params, prngkey: self._wts_factory(dist_params, prngkey, x_dim, num_layers, width)
+        nn_func_factory = lambda dist_params: self._nn_func_factory(dist_params, x_dim, d_dim, num_layers, width, activation)
+        wts_factory = lambda dist_params, prngkey: self._wts_factory(dist_params, prngkey, x_dim, d_dim, num_layers, width)
 
         super().__init__(distribution, prngkey=prngkey, phi_func_factory=nn_func_factory, 
                          params_factory=wts_factory, preprocessing=preprocessing, componentwise=componentwise)
@@ -338,7 +360,7 @@ class NeuralNetwork(AmortisedApproximation):
     #   NN Function Factory
     #
 
-    def _nn_func_factory(self, params, input_dim, num_layers, width, activation):
+    def _nn_func_factory(self, params, x_dim, d_dim, num_layers, width, activation):
         
         output_shape = params.shape
 
@@ -350,12 +372,18 @@ class NeuralNetwork(AmortisedApproximation):
         nn_layers[num_layers+2] = self._create_postprocessing_func(output_shape)
 
         # Function which calls nn layers:
-        def nn_func(x, wts):
-            if x.shape[0] != input_dim:
-                raise ValueError(f'Unexpected x dimension. Expected x.ndim = {input_dim}; instead, x.ndim = {x.shape[0]}.')
+        def nn_func(x, d, wts):
+            if x.shape[0] != x_dim:
+                raise ValueError(f'Unexpected x size. Expected x.size = {x_dim}; instead, x.size = {x.shape[0]}.')
+            if d is not None and d.shape[0] != d_dim:
+                raise ValueError(f'Unexpected d size. Expected d.size = {d_dim}; instead, d.size = {d.shape[0]}.')
+            if d is not None:
+                input_i = jnp.concatenate([x, d], axis=0)
+            else:
+                input_i = x
             for layer in range(num_layers+2):
-                x = nn_layers[layer](x, wts[self.W_key(layer)], wts[self.b_key(layer)])
-            phi = nn_layers[num_layers+2](x)
+                input_i = nn_layers[layer](input_i, wts[self.W_key(layer)], wts[self.b_key(layer)])
+            phi = nn_layers[num_layers+2](input_i)
             return phi
 
         return nn_func
@@ -369,9 +397,9 @@ class NeuralNetwork(AmortisedApproximation):
 
     @staticmethod
     def _create_ith_layer_func(activation):
-        def layer(x, W, b):
+        def layer(val, W, b):
             # NN function will be vectorised over batch dimension of x:
-            output = jnp.einsum('ij,i->j', W, x) + b
+            output = jnp.einsum('ij,i->j', W, val) + b
             if activation is not None:
                 output = activation(output)
             return output
@@ -379,7 +407,6 @@ class NeuralNetwork(AmortisedApproximation):
 
     @staticmethod
     def _create_postprocessing_func(output_shape):
-
         def postprocessing(x):
             if isinstance(output_shape, Jaxtainer):
                 output = Jaxtainer.from_array(x, shapes=output_shape)
@@ -387,18 +414,17 @@ class NeuralNetwork(AmortisedApproximation):
             else:
                 output = x.reshape(output_shape)
             return output
-
         return postprocessing
 
     #
     #   NN Weights Factory
     #
 
-    def _wts_factory(self, params, prngkey, input_dim, num_layers, width):
+    def _wts_factory(self, params, prngkey, x_dim, d_dim, num_layers, width):
 
         if prngkey is None:
             raise ValueError('Must specify a PRNG key to initialise neural network weights.')
-
+        input_dim = x_dim + d_dim
         output_dim = params.size
         nn_wts = {}
         for layer in range(num_layers+2):
@@ -429,32 +455,60 @@ class NeuralNetwork(AmortisedApproximation):
 
 class Preprocessing:
 
-    def __init__(self, preprocess_func):
+    def __init__(self, preprocess_func, d_specified):
         self._func = preprocess_func
+        self._d_specified = d_specified
     
-    def __call__(self, x):
-        return self._func(x)
+    def __call__(self, x, d=None):
+        if self._d_specified and (d is None):
+            raise ValueError('d was not provided as an input to a preprocessing function, '
+                             "but d values were specified during that function's creation.")
+        elif (not self._d_specified) and (d is not None):
+            raise ValueError('d was provided as an input to a preprocessing function, '
+                             "but d values were not specified during that function's creation.")
+        return x, d
 
     @classmethod
-    def std_scaling(cls, data):
+    def std_scaling(cls, x, d=None):
 
-        mean = jnp.mean(data, axis=0, keepdims=True)
-        std = jnp.std(data, axis=0, keepdims=True)
+        x_mean = jnp.mean(x, axis=0, keepdims=True)
+        x_std = jnp.std(x, axis=0, keepdims=True)
+        if d is not None:
+            d_mean = jnp.mean(d, axis=0, keepdims=True)
+            d_std = jnp.std(d, axis=0, keepdims=True)
+            d_specified = True
+        else:
+            d_specified = False
 
-        preprocess_func = lambda x : (x - mean)/std
+        def preprocess_func(x, d=None):
+            x = (x - x_mean)/x_std
+            if d is not None:
+                d = (d - d_mean)/d_std
+            return x, d
         
-        return cls(preprocess_func)
+        return cls(preprocess_func, d_specified)
 
     @classmethod
-    def range_scaling(cls, data):
+    def range_scaling(cls, x, d=None):
+        
+        x_min = jnp.min(x, axis=0, keepdims=True)
+        x_max = jnp.max(x, axis=0, keepdims=True)
+        x_range = x_max - x_min
+        if d is not None:
+            d_min = jnp.min(d, axis=0, keepdims=True)
+            d_max = jnp.max(d, axis=0, keepdims=True)
+            d_range = d_max - d_min
+            d_specified = True
+        else:
+            d_specified = False
 
-        min_val = jnp.min(data, axis=0, keepdims=True)
-        max_val = jnp.max(data, axis=0, keepdims=True)
-        range_val = max_val - min_val
+        def preprocess_func(x, d=None):
+            x = (x - x_min)/x_range
+            if d is not None:
+                d = (d - d_min)/d_range
+            return x, d
 
-        preprocess_func = lambda x : (x - min_val)/range_val
-
-        return cls(preprocess_func)
+        return cls(preprocess_func, d_specified)
 
 # class LinearRegression(AmortisedApproximation):
 

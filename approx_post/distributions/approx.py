@@ -153,7 +153,7 @@ class ApproximateDistribution:
     def params(self):
         return self._phi
 
-    def phi(self, x=None):
+    def phi(self, x=None, d=None):
         phi = self._phi[None,:]
         # Match batch dimension of x if provided:
         if x is not None:
