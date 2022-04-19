@@ -48,7 +48,6 @@ class AmortisedApproximation:
         phi_func = self._create_phi_func(distribution)
         logpdf_funcs = self._create_logpdf_funcs(distribution, phi_func)
         jaxfunc_dict = {'phi': phi_func, 
-                        'phi_del_x': jax.jacfwd(phi_func, argnums=0),
                         'logpdf_del_x': jax.jacfwd(logpdf_funcs[0], argnums=1),
                         'logpdf_epsilon_del_x': jax.jacfwd(logpdf_funcs[1], argnums=1),
                         'logpdf_del_d': jax.jacfwd(logpdf_funcs[0], argnums=2),
@@ -183,10 +182,6 @@ class AmortisedApproximation:
     def phi_del_params(self, x, d=None):
         x, d = self.preprocess_inputs(x, d)
         return self._jaxfunc_dict['phi_del_params'](x, d, self.params)
-    
-    def phi_del_x(self, x, d=None):
-        x, d = self.preprocess_inputs(x, d)
-        return self._jaxfunc_dict['phi_del_x'](x, d, self.params)
 
     def _get_phi(self, phi, x, d):
         if (phi is None) and (x is None):
@@ -342,15 +337,15 @@ class AmortisedApproximation:
 
 class NeuralNetwork(AmortisedApproximation):
 
-    _activations = {'relu': jnn.relu, 'sigmoid': jnn.sigmoid}
+    _activations = {'tanh': jnp.tanh, 'elu': jnn.elu, 'logistic': jnn.sigmoid}
     _initializers = {'W': jnn.initializers.he_normal(), 'b': jnn.initializers.zeros}
 
-    def __init__(self, distribution, x_dim, prngkey, d_dim=0, num_layers=5, width=5, activation='relu', componentwise=True, preprocessing=None):
+    def __init__(self, distribution, x_dim, prngkey, d_dim=0, num_layers=5, width=5, activation='tanh', componentwise=True, preprocessing=None, phi_lims=None, apply_logistic=False):
         
         if (not isinstance(activation, str)) and (activation.lower() not in self._activations):
             raise ValueError(f'Invalid value specified for activation; valid options are: {", ".join(self._activations.keys())}')
 
-        nn_func_factory = lambda dist_params: self._nn_func_factory(dist_params, x_dim, d_dim, num_layers, width, activation)
+        nn_func_factory = lambda dist_params: self._nn_func_factory(dist_params, x_dim, d_dim, num_layers, width, activation, phi_lims, apply_logistic)
         wts_factory = lambda dist_params, prngkey: self._wts_factory(dist_params, prngkey, x_dim, d_dim, num_layers, width)
 
         super().__init__(distribution, prngkey=prngkey, phi_func_factory=nn_func_factory, 
@@ -360,16 +355,18 @@ class NeuralNetwork(AmortisedApproximation):
     #   NN Function Factory
     #
 
-    def _nn_func_factory(self, params, x_dim, d_dim, num_layers, width, activation):
+    def _nn_func_factory(self, params, x_dim, d_dim, num_layers, width, activation, phi_lims, apply_logistic):
         
+        if phi_lims is not None:
+            apply_logistic = False
         output_shape = params.shape
 
         # Create dictionary of functions containing each nn layer:
         nn_layers = {}
         for layer in range(num_layers+2):
-            act_i = self._get_ith_layer_activation(layer, activation, num_layers)
+            act_i = self._get_ith_layer_activation(layer, activation, num_layers, apply_logistic)
             nn_layers[layer] = self._create_ith_layer_func(act_i) 
-        nn_layers[num_layers+2] = self._create_postprocessing_func(output_shape)
+        nn_layers[num_layers+2] = self._create_postprocessing_func(output_shape, phi_lims)
 
         # Function which calls nn layers:
         def nn_func(x, d, wts):
@@ -388,9 +385,14 @@ class NeuralNetwork(AmortisedApproximation):
 
         return nn_func
 
-    def _get_ith_layer_activation(self, layer, activation, num_layers):
-        if layer < num_layers+1:  # Input or Intermediate layer
+    def _get_ith_layer_activation(self, layer, activation, num_layers, apply_logistic):
+        if layer < num_layers:  # Input or Intermediate layer
             act_i = self._activations[activation]
+        elif layer == num_layers:
+            if apply_logistic:
+                act_i = self._activations['logistic']
+            else:
+                act_i = self._activations[activation]
         else: # Output layer
             act_i = None
         return act_i
@@ -406,13 +408,18 @@ class NeuralNetwork(AmortisedApproximation):
         return layer
 
     @staticmethod
-    def _create_postprocessing_func(output_shape):
+    def _create_postprocessing_func(output_shape, phi_lims):
+        if phi_lims is not None:
+            phi_lims = Jaxtainer(phi_lims)
         def postprocessing(x):
             if isinstance(output_shape, Jaxtainer):
                 output = Jaxtainer.from_array(x, shapes=output_shape)
             # If NN is predicting mixture coefficients, which is a regular array:
             else:
                 output = x.reshape(output_shape)
+            if phi_lims is not None:
+                for key, bound in phi_lims.items():
+                    output[key] = bound['lb'] + (bound['ub']-bound['lb'])*jnn.sigmoid(output[key])
             return output
         return postprocessing
 

@@ -71,7 +71,7 @@ class ModelPlusGaussian(JointDistribution):
             # theta.shape = (num_batch, num_samples, theta_dim)
             # x.shape = (num_batch, x_dim)
             prior_logpdf = mvn.logpdf(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples)
-            x_pred = self._model_funcs['model'](theta, x) # shape = (num_batch, num_samples, x_dim)
+            x_pred = self._model_funcs['model'](theta, d) # shape = (num_batch, num_samples, x_dim)
             like_logpdf = mvn_vmap_mean(x, x_pred, self.noise_cov) # shape = (num_batch, num_samples)
             return prior_logpdf + like_logpdf # shape = (num_batch, num_samples)
         
@@ -91,9 +91,9 @@ class ModelPlusGaussian(JointDistribution):
             # theta.shape = (num_batch, num_samples, theta_dim)
             # x.shape = (num_batch, x_dim)
             prior_del_1 = mvn_del_theta_vmap(theta, self.prior_mean, self.prior_cov) # shape = (num_batch, num_samples, theta_dim)
-            x_pred = self._model_funcs['model'](theta, x) # shape = (num_batch, num_samples, x_dim)
+            x_pred = self._model_funcs['model'](theta, d) # shape = (num_batch, num_samples, x_dim)
             like_del_mean = mvn_del_mean_vmap(x, x_pred, self.noise_cov) # shape = (num_batch, num_samples, theta_dim)
-            mean_del_theta = self._model_funcs['model_grad'](theta, x) # shape = (num_batch, num_samples, x_dim, theta_dim)
+            mean_del_theta = self._model_funcs['model_grad'](theta, d) # shape = (num_batch, num_samples, x_dim, theta_dim)
             like_del_1 = jnp.einsum('abji,abj->abi', mean_del_theta, like_del_mean) # shape = (num_batch, num_samples, theta_dim)
             return prior_del_1 + like_del_1
 

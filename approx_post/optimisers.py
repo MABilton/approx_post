@@ -5,7 +5,7 @@ from math import inf
 
 class Optimiser:
 
-    def fit(self, approx, loss_func, x, prngkey, grad_filter=None, num_samples=None, verbose=False, max_iter=100):
+    def fit(self, approx, loss_func, x, prngkey, d=None, grad_filter=None, num_samples=None, verbose=False, max_iter=100):
         
         self._initialise_loop_vars()
         self._initialise_optim_params()
@@ -13,7 +13,7 @@ class Optimiser:
         loss_history = []
         while self._loop_flag:
 
-            loss, loss_del_params = loss_func.eval(approx, x, prngkey=prngkey, num_samples=num_samples)
+            loss, loss_del_params = loss_func.eval(approx, x=x, d=d, prngkey=prngkey, num_samples=num_samples)
 
             loss_del_params = self._filter_grad_components(loss_del_params, grad_filter)
 
