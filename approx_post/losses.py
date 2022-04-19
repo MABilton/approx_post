@@ -24,7 +24,7 @@ class Loss:
 
             loss_del_phi = loss_del_phi.flatten(order='F').reshape(num_batch, phi_size, order='F') # shape = (num_batch, phi_dim)
 
-            phi_del_params = approxdist.phi_del_params(x, d)
+            phi_del_params = approxdist.phi_del_params(x=x, d=d)
 
             phi_del_params = \
             self._vectorise_phi_del_params(phi_del_params, num_batch, phi_sizes_arraytainer, params_shape) # shape = (num_batch, phi_dims, param_size)
@@ -143,7 +143,7 @@ class ELBO(Loss):
     
     def eval(self, approx, x, prngkey, d=None, num_samples=None):
         
-        phi = approx.phi(x, d)
+        phi = approx.phi(x=x, d=d)
 
         if self.use_reparameterisation:
             loss, loss_del_phi = self._eval_elbo_reparameterisation(approx, phi, x, d, num_samples, prngkey)
@@ -164,11 +164,11 @@ class ELBO(Loss):
         theta = approx.transform(epsilon, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
         approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
-        joint_lp = self.joint.logpdf(theta, x, d) # shape = (num_batch, num_samples)
+        joint_lp = self.joint.logpdf(theta, x=x, d=d) # shape = (num_batch, num_samples)
         loss_samples = joint_lp - approx_lp # shape = (num_batch, num_samples)
 
         transform_del_phi = approx.transform_del_2(epsilon, phi=phi) # shape = (num_batch, num_samples, theta_dim, phi_dim)
-        joint_del_1 = self.joint.logpdf_del_1(theta, x, d) # shape = (num_batch, num_samples, theta_dim)
+        joint_del_1 = self.joint.logpdf_del_1(theta, x=x, d=d) # shape = (num_batch, num_samples, theta_dim)
         joint_del_phi = np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
         approx_del_1 = approx.logpdf_del_1(theta, phi=phi) # shape = (num_batch, num_samples, theta_dim)
         approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
@@ -188,7 +188,7 @@ class ELBO(Loss):
         theta = approx.sample(num_samples, prngkey, phi=phi) # shape = (num_batch, num_samples, theta_dim)
 
         approx_lp = approx.logpdf(theta, phi=phi) # shape = (num_batch, num_samples)
-        joint_lp = self.joint.logpdf(theta, x, d) # shape = (num_batch, num_samples)
+        joint_lp = self.joint.logpdf(theta, x=x, d=d) # shape = (num_batch, num_samples)
         approx_del_phi = approx.logpdf_del_2(theta, phi=phi) # shape = (num_batch, num_samples, phi_dim)
 
         loss_samples = (joint_lp - approx_lp) # shape = (num_batch, num_samples)
@@ -213,7 +213,7 @@ class SELBO(Loss):
 
     def eval(self, approx, x, prngkey, d=None, num_samples=None):
 
-        phi = approx.phi(x, d)
+        phi = approx.phi(x=x, d=d)
 
         if self.use_reparameterisation:
             loss, loss_del_phi = self._eval_selbo_reparameterisation(approx, phi, x, d, num_samples, prngkey)
@@ -314,7 +314,7 @@ class ForwardKL(Loss):
         if all(not hasattr(self, attr) for attr in ['joint', 'posterior_samples']):
             raise ValueError('Must specify either jointdist or posterior_samples.')
 
-        phi = approx.phi(x)
+        phi = approx.phi(x,d)
 
         if self.posterior_samples is not None:
             loss, loss_del_phi = self._eval_posterior_samples(approx, phi)
@@ -353,7 +353,7 @@ class ForwardKL(Loss):
         loss_samples = approx_lp
         
         transform_del_phi = approx.transform_del_2(epsilon, phi=phi)
-        joint_del_1 = self.joint.logpdf_del_1(theta, x) # shape = (num_batch, num_samples, theta_dim)
+        joint_del_1 = self.joint.logpdf_del_1(theta, x=x, d=d) # shape = (num_batch, num_samples, theta_dim)
         joint_del_phi = np.einsum("abj,abj...->ab...", joint_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
         approx_del_1 = approx.logpdf_del_1(theta, phi=phi) # shape = (num_batch, num_samples, theta_dim)
         approx_del_phi = np.einsum("abj,abj...->ab...", approx_del_1, transform_del_phi) # shape = (num_batch, num_samples, phi_dim)
@@ -380,7 +380,7 @@ class ForwardKL(Loss):
         approx_del_phi_samples = approx.logpdf_del_2(theta, phi=phi)
 
         loss_samples = approx_lp
-        joint_lp = self.joint.logpdf(theta, x)
+        joint_lp = self.joint.logpdf(theta, x=x, d=d)
         loss_samples = self._compute_importance_samples(loss_samples, approx_lp, joint_lp)
         loss_del_phi_samples = self._compute_importance_samples(approx_del_phi_samples, approx_lp, joint_lp)
 
@@ -397,7 +397,7 @@ class ForwardKL(Loss):
 class MSE(Loss):
 
     def __init__(self, target=None):
-        self.target = target
+        self.target = Jaxtainer(target)
 
     # Need kwargs to 'absorb' unnecessary arguments passed by optimiser:
     def eval(self, amortised, x, d=None, **kwargs):
