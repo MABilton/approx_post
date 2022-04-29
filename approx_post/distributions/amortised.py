@@ -1,4 +1,5 @@
 import copy
+import json
 import itertools
 import inspect
 import numpy as np
@@ -6,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import jax.nn as jnn
 from arraytainers import Jaxtainer
+import os
 
 from . import mixture 
 
@@ -334,6 +336,32 @@ class AmortisedApproximation:
         self._distribution = new_distribution
         self._params = new_params
         self._jaxfunc_dict = new_jaxfunc_dict
+
+    #
+    #   Save and Load Methods
+    #   
+
+    def load(self, load_dir):
+        self._params = Jaxtainer(self._load_json(load_dir))
+
+    @staticmethod
+    def _load_json(load_dir):
+        try:
+            with open(load_dir, 'r') as f:
+                dist_json = json.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f'File {file_dir} not found in directory {file_dir}.')
+        except json.JSONDecodeError:
+            raise json.JSONDecodeError(f'Unable to decode contents of {file_name}. '
+                                       f'Ensure that {file_name} is in a JSON-readable format.')
+        return dist_json
+
+    def save(self, save_name='phi.json', save_dir='.', indent=4):
+        to_save = self._params.tolist()
+        if save_name[-4:] != 'json':
+            save_name += ".json"
+        with open(os.path.join(save_dir, save_name), 'w') as f:
+            json.dump(to_save, f, indent=indent)
 
 class NeuralNetwork(AmortisedApproximation):
 
