@@ -178,12 +178,11 @@ class ApproximateDistribution:
     def load(self, load_dir):
         self._phi = Jaxtainer(self._load_json(load_dir))
 
-
     @staticmethod
     def _load_json(load_dir):
         try:
             with open(load_dir, 'r') as f:
-                dist_json = json.read(f)
+                dist_json = json.load(f)
         except FileNotFoundError:
             raise FileNotFoundError(f'File {file_dir} not found in directory {file_dir}.')
         except json.JSONDecodeError:
